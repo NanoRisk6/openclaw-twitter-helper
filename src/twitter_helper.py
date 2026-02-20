@@ -59,6 +59,26 @@ GENERIC_REPLY_OPENERS = (
     "well said",
     "this is great",
 )
+MARKETING_PIVOT_TERMS = (
+    "brand",
+    "branding",
+    "marketing",
+    "growth",
+    "funnel",
+    "positioning",
+    "audience",
+    "acquisition",
+    "business",
+    "sales",
+)
+CORPORATE_TONE_TERMS = (
+    "leverage",
+    "positioning",
+    "go-to-market",
+    "kpi",
+    "synergy",
+    "stakeholder",
+)
 
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
@@ -1479,6 +1499,37 @@ def _extract_hook_terms(tweet_text: str, context_text: str, limit: int = 10) -> 
     return terms
 
 
+def classify_thread_topic(tweet_text: str, context_text: str) -> str:
+    hay = f"{tweet_text} {context_text}".lower()
+    if any(k in hay for k in ("openclaw", "local ai", "open source", "self-host", "self host", "llm", "agent", "model")):
+        return "local-ai-open-source"
+    if any(k in hay for k in ("president", "biden", "trump", "football", "game", "team", "nfl", "college")):
+        return "sports-politics-banter"
+    if any(k in hay for k in ("startup", "product", "marketing", "brand", "growth")):
+        return "business-marketing"
+    return "unknown"
+
+
+def classify_thread_tone(tweet_text: str, context_text: str) -> str:
+    hay = f"{tweet_text} {context_text}"
+    low = hay.lower()
+    if any(k in low for k in ("lol", "lmao", "haha", "🔥", "😂")):
+        return "banter"
+    if hay.count("!") >= 2 or any(k in low for k in ("wtf", "trash", "rigged", "clown")):
+        return "heated"
+    return "neutral"
+
+
+def has_unrelated_marketing_pivot(candidate: str, tweet_text: str, context_text: str, topic: str) -> bool:
+    cand_low = candidate.lower()
+    source_low = f"{tweet_text} {context_text}".lower()
+    if topic == "business-marketing":
+        return False
+    if not any(term in cand_low for term in MARKETING_PIVOT_TERMS):
+        return False
+    return not any(term in source_low for term in MARKETING_PIVOT_TERMS)
+
+
 def generate_unique_applicable_reply(
     *,
     author: str,
@@ -1490,6 +1541,19 @@ def generate_unique_applicable_reply(
     recent_hours: int = 24,
     is_discovery: bool = False,
 ) -> Dict[str, object]:
+    topic = classify_thread_topic(tweet_text=tweet_text, context_text=context_text)
+    tone = classify_thread_tone(tweet_text=tweet_text, context_text=context_text)
+    if is_discovery and topic == "unknown":
+        return {
+            "reply_text": "",
+            "confidence": 0,
+            "reason": "off-topic discovery thread",
+            "hook_used": "",
+            "unique_passed": False,
+            "topic": topic,
+            "tone": tone,
+        }
+
     draft_input = tweet_text if not context_text else f"{tweet_text}\n\nThread context:\n{context_text}"
     if is_discovery:
         draft_input = (
@@ -1497,6 +1561,12 @@ def generate_unique_applicable_reply(
             "Reply with a natural, hand-picked, proactive tone.\n\n"
             + draft_input
         )
+    draft_input = (
+        f"Thread topic: {topic}\n"
+        f"Thread tone: {tone}\n"
+        "Rules: stay 100% on-topic, reference concrete details, avoid unrelated pivots.\n\n"
+        + draft_input
+    )
     if persona_text.strip():
         draft_input = f"Persona guidance:\n{persona_text.strip()}\n\n{draft_input}"
     drafts = generate_drafts_fn(author=author, text=draft_input, draft_count=6) or []
@@ -1522,6 +1592,10 @@ def generate_unique_applicable_reply(
             continue
         low = candidate.lower()
         if any(low.startswith(prefix) for prefix in GENERIC_REPLY_OPENERS):
+            continue
+        if has_unrelated_marketing_pivot(candidate, tweet_text=tweet_text, context_text=context_text, topic=topic):
+            continue
+        if tone == "heated" and any(term in low for term in CORPORATE_TONE_TERMS):
             continue
         prefix_key = _reply_prefix_key(candidate)
         if prefix_key in recent_prefixes:
@@ -1569,6 +1643,8 @@ def generate_unique_applicable_reply(
         "reason": best_reason,
         "hook_used": best_hook,
         "unique_passed": best_unique,
+        "topic": topic,
+        "tone": tone,
     }
 
 
@@ -1793,6 +1869,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
     total_posted = 0
     total_skipped_already_replied = 0
     total_skipped_already_queued = 0
+    total_skipped_offtopic_discovery = 0
     per_query_results: List[Dict[str, object]] = []
     persona_text = load_persona_text()
     replied_targets = load_replied_targets(ACTIVE_ACCOUNT)
@@ -1844,7 +1921,6 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                     }
                 )
                 continue
-            total_candidates += 1
             aid = str(row.get("author_id", ""))
             author = users.get(aid, "unknown")
             text = str(row.get("text", "")).strip()
@@ -1869,6 +1945,8 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
             reason = str(reply_eval.get("reason", "")).strip()
             hook_used = str(reply_eval.get("hook_used", "")).strip()
             unique_passed = bool(reply_eval.get("unique_passed", False))
+            topic = str(reply_eval.get("topic", "")).strip()
+            tone = str(reply_eval.get("tone", "")).strip()
 
             item = {
                 "tweet_id": tid,
@@ -1881,8 +1959,17 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                 "reason": reason,
                 "hook_used": hook_used,
                 "unique_passed": unique_passed,
+                "topic": topic,
+                "tone": tone,
                 "action": "draft",
             }
+
+            if not draft or confidence <= 0:
+                item["action"] = "skipped_offtopic_discovery"
+                total_skipped_offtopic_discovery += 1
+                query_rows.append(item)
+                continue
+            total_candidates += 1
 
             if (
                 approval_queue_enabled
@@ -1962,6 +2049,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
         "total_posted": total_posted,
         "total_skipped_already_replied": total_skipped_already_replied,
         "total_skipped_already_queued": total_skipped_already_queued,
+        "total_skipped_offtopic_discovery": total_skipped_offtopic_discovery,
         "results": per_query_results,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -1979,7 +2067,8 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
     print(
         "Seen: "
         f"{total_seen} | candidates: {total_candidates} | posted: {total_posted} | "
-        f"skip_replied: {total_skipped_already_replied} | skip_queued: {total_skipped_already_queued}"
+        f"skip_replied: {total_skipped_already_replied} | skip_queued: {total_skipped_already_queued} | "
+        f"skip_offtopic: {total_skipped_offtopic_discovery}"
     )
     for q in per_query_results:
         print(f"- {q['query']}")

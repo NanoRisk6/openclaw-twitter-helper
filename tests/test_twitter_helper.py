@@ -561,7 +561,7 @@ class PostSanitizeTests(unittest.TestCase):
                         {
                             "id": "123",
                             "author_id": "42",
-                            "text": "hello",
+                            "text": "openclaw local ai should run fully offline",
                             "public_metrics": {"like_count": 2, "retweet_count": 0, "reply_count": 0, "quote_count": 0},
                         }
                     ],
@@ -898,7 +898,7 @@ class PostSanitizeTests(unittest.TestCase):
 
                 twitter_helper.generate_unique_applicable_reply(
                     author="alice",
-                    tweet_text="vendor lock-in again",
+                    tweet_text="OpenClaw vendor lock-in again",
                     context_text="",
                     score=20,
                     generate_drafts_fn=fake_generate,
@@ -909,6 +909,46 @@ class PostSanitizeTests(unittest.TestCase):
                 twitter_helper.RECENT_REPLIES_CACHE = original_cache
 
         self.assertIn("Discovery mode:", captured["text"])
+
+    def test_generate_unique_applicable_reply_skips_unknown_discovery_topic(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_cache = twitter_helper.RECENT_REPLIES_CACHE
+            twitter_helper.RECENT_REPLIES_CACHE = Path(td) / "recent_replies.jsonl"
+            try:
+                result = twitter_helper.generate_unique_applicable_reply(
+                    author="alice",
+                    tweet_text="Totally random lifestyle post",
+                    context_text="No clear tech context here.",
+                    score=20,
+                    generate_drafts_fn=lambda author, text, draft_count: ["Some reply"],
+                    persona_text="open-source persona",
+                    is_discovery=True,
+                )
+            finally:
+                twitter_helper.RECENT_REPLIES_CACHE = original_cache
+        self.assertEqual(result["confidence"], 0)
+        self.assertEqual(result["reason"], "off-topic discovery thread")
+
+    def test_generate_unique_applicable_reply_blocks_unrelated_marketing_pivot(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_cache = twitter_helper.RECENT_REPLIES_CACHE
+            twitter_helper.RECENT_REPLIES_CACHE = Path(td) / "recent_replies.jsonl"
+            try:
+                result = twitter_helper.generate_unique_applicable_reply(
+                    author="alice",
+                    tweet_text="OpenClaw runs local models offline with no lock-in.",
+                    context_text="Users want self-hosted control.",
+                    score=50,
+                    generate_drafts_fn=lambda author, text, draft_count: [
+                        "Your brand growth funnel and audience strategy is the unlock.",
+                        "Local-first control is the key unlock in this thread.",
+                    ],
+                    persona_text="open-source persona",
+                    is_discovery=True,
+                )
+            finally:
+                twitter_helper.RECENT_REPLIES_CACHE = original_cache
+        self.assertNotIn("brand growth funnel", result["reply_text"].lower())
 
     def test_has_replied_to_uses_90_day_window(self) -> None:
         with tempfile.TemporaryDirectory() as td:
