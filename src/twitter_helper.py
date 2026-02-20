@@ -312,6 +312,105 @@ def prompt_yes_no(question: str, default_yes: bool = True) -> bool:
         print("Please enter y or n.")
 
 
+def parse_keywords(raw: str) -> List[str]:
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def cmd_reply_engine(args: argparse.Namespace) -> int:
+    try:
+        from reply_engine.pipeline import (
+            load_candidates,
+            load_scored,
+            run_discovery,
+            run_ideas,
+            run_rank,
+            save_candidates,
+            save_scored,
+        )
+        from reply_engine.twitter_helper import run_mentions_workflow, run_twitter_helper
+    except Exception as exc:
+        raise TwitterHelperError(
+            "Reply engine not ready. Install dependencies with: "
+            "pip install -r /Users/matthew/openclaw-twitter-helper/requirements-reply-engine.txt"
+        ) from exc
+
+    if args.command == "reply-discover":
+        keywords = parse_keywords(args.keywords)
+        candidates = run_discovery(keywords, limit=args.limit, local_input=args.local_input)
+        save_candidates(candidates, args.output)
+        print(f"discovered {len(candidates)} candidates -> {args.output}")
+        return 0
+
+    if args.command == "reply-rank":
+        keywords = parse_keywords(args.keywords)
+        candidates = load_candidates(args.input)
+        scored = run_rank(candidates, keywords, include_weak=args.include_weak)
+        save_scored(scored, args.output)
+        print(f"ranked {len(scored)} candidates -> {args.output}")
+        return 0
+
+    if args.command == "reply-ideas":
+        scored = load_scored(args.input)
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        run_ideas(scored, top=args.top, out_path=str(out))
+        print(f"wrote ideas -> {out}")
+        return 0
+
+    if args.command == "reply-run":
+        keywords = parse_keywords(args.keywords)
+        candidates = run_discovery(keywords, limit=args.limit, local_input=args.local_input)
+        scored = run_rank(candidates, keywords, include_weak=args.include_weak)
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        run_ideas(scored, top=min(20, len(scored)), out_path=str(out))
+        print(f"discovered {len(candidates)} | wrote ideas -> {out}")
+        return 0
+
+    if args.command == "reply-twitter-helper":
+        result = run_twitter_helper(
+            tweet=args.tweet,
+            draft_count=args.draft_count,
+            pick=args.pick,
+            dry_run=args.dry_run,
+            log_path=args.log_path,
+        )
+        print(f"tweet: {result['tweet_id']} (@{result['author']})")
+        print("drafts:")
+        for i, draft in enumerate(result["drafts"], start=1):
+            print(f"{i}. {draft}")
+        print(f"picked: #{result['picked_index']}")
+        if result["dry_run"]:
+            print("dry-run: no reply posted")
+        else:
+            print(f"posted: {result['reply_url']}")
+            print(f"log: {result['log_path']}")
+        return 0
+
+    if args.command == "reply-twitter-e2e":
+        result = run_mentions_workflow(
+            handle=args.handle,
+            mention_limit=args.mention_limit,
+            draft_count=args.draft_count,
+            pick=args.pick,
+            post=args.post,
+            max_posts=args.max_posts,
+            log_path=args.log_path,
+            report_path=args.report_path,
+        )
+        print(f"handle: @{result['handle']}")
+        print(f"mentions fetched: {result['fetched_mentions']}")
+        print(f"replies posted: {result['posted_replies']}")
+        print(f"report: {result['report_path']}")
+        if result["post"]:
+            print(f"log: {result['log_path']}")
+        for item in result["results"]:
+            print(f"- {item['status']} | {item['tweet_id']} | @{item['author']}")
+        return 0
+
+    raise TwitterHelperError(f"Unknown reply engine command: {args.command}")
+
+
 def config_status(env_path: Path) -> Dict[str, object]:
     env = load_env_file(env_path)
     exists = env_path.exists()
@@ -1055,6 +1154,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restart recovery: repair setup/auth after reboot without posting",
     )
 
+    p_reply_discover = sub.add_parser(
+        "reply-discover",
+        help="Reply engine: discover candidate conversations",
+    )
+    p_reply_discover.add_argument("--keywords", required=True, help="comma-separated keywords")
+    p_reply_discover.add_argument("--limit", type=int, default=30)
+    p_reply_discover.add_argument("--local-input", default=None)
+    p_reply_discover.add_argument("--output", required=True)
+
+    p_reply_rank = sub.add_parser(
+        "reply-rank",
+        help="Reply engine: score and rank candidates",
+    )
+    p_reply_rank.add_argument("--input", required=True)
+    p_reply_rank.add_argument("--keywords", required=True, help="comma-separated keywords")
+    p_reply_rank.add_argument("--include-weak", action="store_true")
+    p_reply_rank.add_argument("--output", required=True)
+
+    p_reply_ideas = sub.add_parser(
+        "reply-ideas",
+        help="Reply engine: generate markdown reply ideas",
+    )
+    p_reply_ideas.add_argument("--input", required=True)
+    p_reply_ideas.add_argument("--top", type=int, default=20)
+    p_reply_ideas.add_argument("--output", required=True)
+
+    p_reply_run = sub.add_parser(
+        "reply-run",
+        help="Reply engine: end-to-end discover/rank/ideas",
+    )
+    p_reply_run.add_argument("--keywords", required=True, help="comma-separated keywords")
+    p_reply_run.add_argument("--limit", type=int, default=30)
+    p_reply_run.add_argument("--local-input", default=None)
+    p_reply_run.add_argument("--include-weak", action="store_true")
+    p_reply_run.add_argument("--output", required=True)
+
+    p_reply_tw = sub.add_parser(
+        "reply-twitter-helper",
+        help="Reply engine: draft/post reply to one target tweet",
+    )
+    p_reply_tw.add_argument("--tweet", required=True, help="tweet URL or tweet ID")
+    p_reply_tw.add_argument("--draft-count", type=int, default=5)
+    p_reply_tw.add_argument("--pick", type=int, default=1)
+    p_reply_tw.add_argument("--dry-run", action="store_true")
+    p_reply_tw.add_argument("--log-path", default="data/replies.jsonl")
+
+    p_reply_e2e = sub.add_parser(
+        "reply-twitter-e2e",
+        help="Reply engine: mentions workflow with optional posting",
+    )
+    p_reply_e2e.add_argument("--handle", default="OpenClawAI")
+    p_reply_e2e.add_argument("--mention-limit", type=int, default=20)
+    p_reply_e2e.add_argument("--draft-count", type=int, default=5)
+    p_reply_e2e.add_argument("--pick", type=int, default=1)
+    p_reply_e2e.add_argument("--post", action="store_true")
+    p_reply_e2e.add_argument("--max-posts", type=int, default=3)
+    p_reply_e2e.add_argument("--log-path", default="data/replies.jsonl")
+    p_reply_e2e.add_argument("--report-path", default="data/mentions_report.json")
+
     return parser
 
 
@@ -1077,6 +1235,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_run_twitter_helper(env_path, args)
         if args.command == "restart-setup":
             return cmd_restart_setup(env_path, args)
+        if args.command in {
+            "reply-discover",
+            "reply-rank",
+            "reply-ideas",
+            "reply-run",
+            "reply-twitter-helper",
+            "reply-twitter-e2e",
+        }:
+            return cmd_reply_engine(args)
         if args.command == "auth-login":
             return cmd_auth_login(env_path, args)
         if args.command == "doctor":

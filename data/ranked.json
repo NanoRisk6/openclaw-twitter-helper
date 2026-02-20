@@ -1,0 +1,471 @@
+[
+  {
+    "candidate": {
+      "source": "reddit",
+      "author": "Certain_Tea_",
+      "text": "Average openclaw users online",
+      "url": "https://reddit.com/r/singularity/comments/1r9tqd3/average_openclaw_users_online/",
+      "created_utc": 1771589513,
+      "engagement": {
+        "score": 30.0,
+        "comments": 7.0
+      },
+      "metadata": {
+        "subreddit": "singularity",
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.6198289634400705,
+    "reasons": [
+      "freshness=0.99",
+      "keyword_match=0.25",
+      "engagement=0.45"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "reddit",
+      "author": "arbayi",
+      "text": "How I Set Up OpenClaw on a Hetzner VPS \u2014 Full Guide",
+      "url": "https://reddit.com/r/openclaw/comments/1r9tv3d/how_i_set_up_openclaw_on_a_hetzner_vps_full_guide/",
+      "created_utc": 1771589919,
+      "engagement": {
+        "score": 2.0,
+        "comments": 1.0
+      },
+      "metadata": {
+        "subreddit": "openclaw",
+        "keyword": "open source"
+      }
+    },
+    "score": 0.5515657655638918,
+    "reasons": [
+      "freshness=0.99",
+      "keyword_match=0.25",
+      "engagement=0.17"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "reddit",
+      "author": "Fresh-Daikon-9408",
+      "text": "[Showcase] Giving OpenClaw \"extra hands\": How the agent autonomously discovered and used my n8n-as-code CLI to build workflows",
+      "url": "https://reddit.com/r/openclaw/comments/1r9tvw1/showcase_giving_openclaw_extra_hands_how_the/",
+      "created_utc": 1771589983,
+      "engagement": {
+        "score": 1.0,
+        "comments": 1.0
+      },
+      "metadata": {
+        "subreddit": "openclaw",
+        "keyword": "open source"
+      }
+    },
+    "score": 0.5429060039229026,
+    "reasons": [
+      "freshness=0.99",
+      "keyword_match=0.25",
+      "engagement=0.14"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "reddit",
+      "author": "Certain_Tea_",
+      "text": "average openclaw/AI users online",
+      "url": "https://reddit.com/r/shitposting/comments/1r9tr6w/average_openclawai_users_online/",
+      "created_utc": 1771589585,
+      "engagement": {
+        "score": 1.0,
+        "comments": 1.0
+      },
+      "metadata": {
+        "subreddit": "shitposting",
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.5408558960702915,
+    "reasons": [
+      "freshness=0.99",
+      "keyword_match=0.25",
+      "engagement=0.14"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "reddit",
+      "author": "qyqstc",
+      "text": "How to let openclaw access my iCloud drive",
+      "url": "https://reddit.com/r/openclaw/comments/1r9thjg/how_to_let_openclaw_access_my_icloud_drive/",
+      "created_utc": 1771588793,
+      "engagement": {
+        "score": 1.0,
+        "comments": 1.0
+      },
+      "metadata": {
+        "subreddit": "openclaw",
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.5368042719571188,
+    "reasons": [
+      "freshness=0.98",
+      "keyword_match=0.25",
+      "engagement=0.14"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "reddit",
+      "author": "Wealthyshezzy1",
+      "text": "I Built a Free OpenClaw Directory (Made \u00a332.55 @ \u00a34.99/Month)",
+      "url": "https://reddit.com/r/buildinpublic/comments/1r9tvoq/i_built_a_free_openclaw_directory_made_3255/",
+      "created_utc": 1771589965,
+      "engagement": {
+        "score": 1.0,
+        "comments": 0.0
+      },
+      "metadata": {
+        "subreddit": "buildinpublic",
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.5301422967781977,
+    "reasons": [
+      "freshness=0.99",
+      "keyword_match=0.25",
+      "engagement=0.09"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "cvhc",
+      "text": "Ask HN: Any real OpenClaw (Clawd Bot/Molt Bot) users? What's your experience?",
+      "url": "https://news.ycombinator.com/item?id=46838946",
+      "created_utc": 1769882414,
+      "engagement": {
+        "points": 121.0,
+        "comments": 189.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.3418685296703041,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.72",
+      "has_question"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "ethomson",
+      "text": "Microsoft takes .NET open source and cross-platform",
+      "url": "http://news.microsoft.com/2014/11/12/microsoft-takes-net-open-source-and-cross-platform-adds-new-development-capabilities-with-visual-studio-2015-net-2015-and-visual-studio-online/",
+      "created_utc": 1415806647,
+      "engagement": {
+        "points": 2376.0,
+        "comments": 894.0
+      },
+      "metadata": {
+        "keyword": "open source"
+      }
+    },
+    "score": 0.3125,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=1.00"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "atgctg",
+      "text": "Open source AI is the path forward",
+      "url": "https://about.fb.com/news/2024/07/open-source-ai-is-the-path-forward/",
+      "created_utc": 1721747321,
+      "engagement": {
+        "points": 2360.0,
+        "comments": 887.0
+      },
+      "metadata": {
+        "keyword": "open source"
+      }
+    },
+    "score": 0.3125,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=1.00"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "antirez",
+      "text": "Redis is open source again",
+      "url": "https://antirez.com/news/151",
+      "created_utc": 1746114995,
+      "engagement": {
+        "points": 1896.0,
+        "comments": 789.0
+      },
+      "metadata": {
+        "keyword": "open source"
+      }
+    },
+    "score": 0.30924401178384947,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.99"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "maelito",
+      "text": "Docs \u2013 Open source alternative to Notion or Outline",
+      "url": "https://github.com/suitenumerique/docs",
+      "created_utc": 1742125132,
+      "engagement": {
+        "points": 1952.0,
+        "comments": 454.0
+      },
+      "metadata": {
+        "keyword": "open source"
+      }
+    },
+    "score": 0.30581676368072097,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.97"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "theahura",
+      "text": "OpenClaw is dangerous",
+      "url": "https://12gramsofcarbon.com/p/tech-things-openclaw-is-dangerous",
+      "created_utc": 1771439754,
+      "engagement": {
+        "points": 81.0,
+        "comments": 93.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.30229173660972963,
+    "reasons": [
+      "freshness=0.17",
+      "keyword_match=0.25",
+      "engagement=0.65"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "meetpateltech",
+      "text": "Ex-GitHub CEO launches a new developer platform for AI agents",
+      "url": "https://entire.io/blog/hello-entire-world/",
+      "created_utc": 1770738287,
+      "engagement": {
+        "points": 611.0,
+        "comments": 576.0
+      },
+      "metadata": {
+        "keyword": "ai agents"
+      }
+    },
+    "score": 0.2837741793225565,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.89"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "ed",
+      "text": "OpenClaw \u2013 Moltbot Renamed Again",
+      "url": "https://openclaw.ai/blog/introducing-openclaw",
+      "created_utc": 1769750088,
+      "engagement": {
+        "points": 667.0,
+        "comments": 382.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.27989204535029544,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.87"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "jakequist",
+      "text": "OpenClaw is what Apple intelligence should have been",
+      "url": "https://www.jakequist.com/thoughts/openclaw-is-what-apple-intelligence-should-have-been",
+      "created_utc": 1770251286,
+      "engagement": {
+        "points": 518.0,
+        "comments": 417.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.2763005668874169,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.86"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "tiny-automates",
+      "text": "Frontier AI agents violate ethical constraints 30\u201350% of time, pressured by KPIs",
+      "url": "https://arxiv.org/abs/2512.20798",
+      "created_utc": 1770693437,
+      "engagement": {
+        "points": 544.0,
+        "comments": 366.0
+      },
+      "metadata": {
+        "keyword": "ai agents"
+      }
+    },
+    "score": 0.2754683608462919,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.85"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "novoreorx",
+      "text": "OpenClaw is changing my life",
+      "url": "https://reorx.com/blog/openclaw-is-changing-my-life/",
+      "created_utc": 1770531687,
+      "engagement": {
+        "points": 339.0,
+        "comments": 513.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.27340087294821547,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.84"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "brdd",
+      "text": "A sane but bull case on Clawdbot / OpenClaw",
+      "url": "https://brandon.wang/2026/clawdbot",
+      "created_utc": 1770133630,
+      "engagement": {
+        "points": 303.0,
+        "comments": 482.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.2708424210922228,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.83"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "ms7892",
+      "text": "Nanobot: Ultra-Lightweight Alternative to OpenClaw",
+      "url": "https://github.com/HKUDS/nanobot",
+      "created_utc": 1770284351,
+      "engagement": {
+        "points": 257.0,
+        "comments": 128.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.24862003985602452,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.74"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "Beeroness",
+      "text": "OpenClaw is basically a cascade of LLMs in prime position to mess stuff up",
+      "url": "https://cacm.acm.org/blogcacm/openclaw-a-k-a-moltbot-is-everywhere-all-at-once-and-a-disaster-waiting-to-happen/",
+      "created_utc": 1770146765,
+      "engagement": {
+        "points": 110.0,
+        "comments": 69.0
+      },
+      "metadata": {
+        "keyword": "openclaw"
+      }
+    },
+    "score": 0.22477992642110392,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.65"
+    ]
+  },
+  {
+    "candidate": {
+      "source": "hackernews",
+      "author": "di3goleite",
+      "text": "Twitter Growth: 0 \u2013 1000 Followers",
+      "url": "https://share-docs.clickup.com/14152207/d/h/dfwgf-202/dc59f55219181e3",
+      "created_utc": 1677719510,
+      "engagement": {
+        "points": 7.0,
+        "comments": 1.0
+      },
+      "metadata": {
+        "keyword": "twitter growth"
+      }
+    },
+    "score": 0.13116326804175688,
+    "reasons": [
+      "freshness=0.00",
+      "keyword_match=0.25",
+      "engagement=0.27"
+    ]
+  }
+]

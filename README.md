@@ -2,6 +2,8 @@
 
 Friendly CLI for posting tweets and threads with interactive setup and a true browser OAuth wizard.
 
+This repo now also includes the full OpenClaw Twitter Reply Engine helper (discovery, ranking, draft generation, and mentions workflows).
+
 ## Quickstart (Recommended)
 
 ```bash
@@ -135,6 +137,51 @@ Post a thread (`---` between tweets):
 
 ```bash
 python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py thread --file /Users/matthew/openclaw-twitter-helper/examples/thread.txt
+```
+
+## Integrated Reply Engine
+
+Install reply-engine dependencies:
+
+```bash
+cd /Users/matthew/openclaw-twitter-helper
+python3 -m pip install -r /Users/matthew/openclaw-twitter-helper/requirements-reply-engine.txt
+```
+
+Discover candidate conversations:
+
+```bash
+python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-discover --keywords "open source,ai agents" --limit 30 --output /Users/matthew/openclaw-twitter-helper/data/discovered.json
+```
+
+Rank candidates:
+
+```bash
+python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-rank --input /Users/matthew/openclaw-twitter-helper/data/discovered.json --keywords "open source,ai agents" --output /Users/matthew/openclaw-twitter-helper/data/ranked.json
+```
+
+Generate ideas markdown:
+
+```bash
+python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-ideas --input /Users/matthew/openclaw-twitter-helper/data/ranked.json --top 20 --output /Users/matthew/openclaw-twitter-helper/data/reply_ideas.md
+```
+
+End-to-end reply pipeline:
+
+```bash
+python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-run --keywords "open source,ai agents,twitter growth" --limit 30 --output /Users/matthew/openclaw-twitter-helper/data/reply_ideas_step.md
+```
+
+Draft/post reply for one tweet:
+
+```bash
+python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-twitter-helper --tweet "https://twitter.com/OpenClawAI/status/2024820748980748765" --dry-run
+```
+
+Mentions workflow (draft-only default):
+
+```bash
+python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1
 ```
 
 Open Claw integration post:

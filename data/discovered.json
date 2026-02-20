@@ -1,0 +1,486 @@
+[
+  {
+    "source": "hackernews",
+    "author": "raxod502",
+    "text": "Replit used legal threats to kill my open-source project",
+    "url": "https://intuitiveexplanations.com/tech/replit/",
+    "created_utc": 1623082084,
+    "engagement": {
+      "points": 4022.0,
+      "comments": 1274.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "Hello9999901",
+    "text": "Show HN: I made an open-source laptop from scratch",
+    "url": "https://www.byran.ee/posts/creation/",
+    "created_utc": 1737578512,
+    "engagement": {
+      "points": 3237.0,
+      "comments": 323.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "ghishadow",
+    "text": "Nvidia releases open-source GPU kernel modules",
+    "url": "https://developer.nvidia.com/blog/nvidia-releases-open-source-gpu-kernel-modules/",
+    "created_utc": 1652299186,
+    "engagement": {
+      "points": 2410.0,
+      "comments": 392.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "ethomson",
+    "text": "Microsoft takes .NET open source and cross-platform",
+    "url": "http://news.microsoft.com/2014/11/12/microsoft-takes-net-open-source-and-cross-platform-adds-new-development-capabilities-with-visual-studio-2015-net-2015-and-visual-studio-online/",
+    "created_utc": 1415806647,
+    "engagement": {
+      "points": 2376.0,
+      "comments": 894.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "atgctg",
+    "text": "Open source AI is the path forward",
+    "url": "https://about.fb.com/news/2024/07/open-source-ai-is-the-path-forward/",
+    "created_utc": 1721747321,
+    "engagement": {
+      "points": 2360.0,
+      "comments": 887.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "spullara",
+    "text": "Apple open-sources FoundationDB",
+    "url": "https://www.foundationdb.org/blog/foundationdb-is-open-source/",
+    "created_utc": 1524156117,
+    "engagement": {
+      "points": 2136.0,
+      "comments": 441.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "maelito",
+    "text": "Docs \u2013 Open source alternative to Notion or Outline",
+    "url": "https://github.com/suitenumerique/docs",
+    "created_utc": 1742125132,
+    "engagement": {
+      "points": 1952.0,
+      "comments": 454.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "antirez",
+    "text": "Redis is open source again",
+    "url": "https://antirez.com/news/151",
+    "created_utc": 1746114995,
+    "engagement": {
+      "points": 1896.0,
+      "comments": 789.0
+    },
+    "metadata": {
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "meetpateltech",
+    "text": "Ex-GitHub CEO launches a new developer platform for AI agents",
+    "url": "https://entire.io/blog/hello-entire-world/",
+    "created_utc": 1770738287,
+    "engagement": {
+      "points": 611.0,
+      "comments": 576.0
+    },
+    "metadata": {
+      "keyword": "ai agents"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "tiny-automates",
+    "text": "Frontier AI agents violate ethical constraints 30\u201350% of time, pressured by KPIs",
+    "url": "https://arxiv.org/abs/2512.20798",
+    "created_utc": 1770693437,
+    "engagement": {
+      "points": 544.0,
+      "comments": 366.0
+    },
+    "metadata": {
+      "keyword": "ai agents"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "coloneltcb",
+    "text": "Twitter\u2019s User Growth Goes Nowhere as It Meets Revenue Expectations of $710M",
+    "url": "http://techcrunch.com/2016/02/10/twitters-user-growth-goes-nowhere-as-it-meets-revenue-expectations-of-710m/",
+    "created_utc": 1455139852,
+    "engagement": {
+      "points": 128.0,
+      "comments": 138.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "shazow",
+    "text": "57 YC startups' Twitter follower growth over time",
+    "url": "http://socialgrapple.com/showcase/yc",
+    "created_utc": 1299520313,
+    "engagement": {
+      "points": 96.0,
+      "comments": 42.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "that",
+    "text": "Twitter user growth hits all-time highs, monetizable daily user growth tops 20%",
+    "url": "https://www.theverge.com/2022/11/7/23445476/elon-musk-twitter-user-growth-all-time-high-advertisers",
+    "created_utc": 1667935080,
+    "engagement": {
+      "points": 20.0,
+      "comments": 13.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "happy-go-lucky",
+    "text": "Twitter\u2019s user growth goes nowhere and the stock is collapsing",
+    "url": "https://techcrunch.com/2017/07/27/twitters-user-growth-went-nowhere-and-the-stock-is-diving/",
+    "created_utc": 1501158101,
+    "engagement": {
+      "points": 8.0,
+      "comments": 0.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "zhuxuefeng1994",
+    "text": "The new number crushing Twitter: revenue growth down 60% to 20%",
+    "url": "https://techcrunch.com/2016/07/26/shrinking-wings/",
+    "created_utc": 1469569224,
+    "engagement": {
+      "points": 8.0,
+      "comments": 0.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "edpichler",
+    "text": "Twitter user growth is higher than ever (2022)",
+    "url": "https://www.theverge.com/2022/11/7/23445476/elon-musk-twitter-user-growth-all-time-high-advertisers",
+    "created_utc": 1683556364,
+    "engagement": {
+      "points": 7.0,
+      "comments": 4.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "di3goleite",
+    "text": "Twitter Growth: 0 \u2013 1000 Followers",
+    "url": "https://share-docs.clickup.com/14152207/d/h/dfwgf-202/dc59f55219181e3",
+    "created_utc": 1677719510,
+    "engagement": {
+      "points": 7.0,
+      "comments": 1.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "koolba",
+    "text": "Twitter earnings growth relied on selling user data",
+    "url": "https://www.marketwatch.com/story/twitter-earnings-growth-relied-on-selling-user-data-2018-04-25",
+    "created_utc": 1524683675,
+    "engagement": {
+      "points": 7.0,
+      "comments": 0.0
+    },
+    "metadata": {
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "ed",
+    "text": "OpenClaw \u2013 Moltbot Renamed Again",
+    "url": "https://openclaw.ai/blog/introducing-openclaw",
+    "created_utc": 1769750088,
+    "engagement": {
+      "points": 667.0,
+      "comments": 382.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "jakequist",
+    "text": "OpenClaw is what Apple intelligence should have been",
+    "url": "https://www.jakequist.com/thoughts/openclaw-is-what-apple-intelligence-should-have-been",
+    "created_utc": 1770251286,
+    "engagement": {
+      "points": 518.0,
+      "comments": 417.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "novoreorx",
+    "text": "OpenClaw is changing my life",
+    "url": "https://reorx.com/blog/openclaw-is-changing-my-life/",
+    "created_utc": 1770531687,
+    "engagement": {
+      "points": 339.0,
+      "comments": 513.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "brdd",
+    "text": "A sane but bull case on Clawdbot / OpenClaw",
+    "url": "https://brandon.wang/2026/clawdbot",
+    "created_utc": 1770133630,
+    "engagement": {
+      "points": 303.0,
+      "comments": 482.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "ms7892",
+    "text": "Nanobot: Ultra-Lightweight Alternative to OpenClaw",
+    "url": "https://github.com/HKUDS/nanobot",
+    "created_utc": 1770284351,
+    "engagement": {
+      "points": 257.0,
+      "comments": 128.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "cvhc",
+    "text": "Ask HN: Any real OpenClaw (Clawd Bot/Molt Bot) users? What's your experience?",
+    "url": "https://news.ycombinator.com/item?id=46838946",
+    "created_utc": 1769882414,
+    "engagement": {
+      "points": 121.0,
+      "comments": 189.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "Beeroness",
+    "text": "OpenClaw is basically a cascade of LLMs in prime position to mess stuff up",
+    "url": "https://cacm.acm.org/blogcacm/openclaw-a-k-a-moltbot-is-everywhere-all-at-once-and-a-disaster-waiting-to-happen/",
+    "created_utc": 1770146765,
+    "engagement": {
+      "points": 110.0,
+      "comments": 69.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "hackernews",
+    "author": "theahura",
+    "text": "OpenClaw is dangerous",
+    "url": "https://12gramsofcarbon.com/p/tech-things-openclaw-is-dangerous",
+    "created_utc": 1771439754,
+    "engagement": {
+      "points": 81.0,
+      "comments": 93.0
+    },
+    "metadata": {
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "Fresh-Daikon-9408",
+    "text": "[Showcase] Giving OpenClaw \"extra hands\": How the agent autonomously discovered and used my n8n-as-code CLI to build workflows",
+    "url": "https://reddit.com/r/openclaw/comments/1r9tvw1/showcase_giving_openclaw_extra_hands_how_the/",
+    "created_utc": 1771589983,
+    "engagement": {
+      "score": 1.0,
+      "comments": 1.0
+    },
+    "metadata": {
+      "subreddit": "openclaw",
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "arbayi",
+    "text": "How I Set Up OpenClaw on a Hetzner VPS \u2014 Full Guide",
+    "url": "https://reddit.com/r/openclaw/comments/1r9tv3d/how_i_set_up_openclaw_on_a_hetzner_vps_full_guide/",
+    "created_utc": 1771589919,
+    "engagement": {
+      "score": 2.0,
+      "comments": 1.0
+    },
+    "metadata": {
+      "subreddit": "openclaw",
+      "keyword": "open source"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "Ace_Vikings",
+    "text": "Building an Indie SaaS with no budget is hard -&gt; Here's everything I learned about growth and marketing",
+    "url": "https://reddit.com/r/indiehackersindia/comments/1r9qhvv/building_an_indie_saas_with_no_budget_is_hard/",
+    "created_utc": 1771578443,
+    "engagement": {
+      "score": 5.0,
+      "comments": 24.0
+    },
+    "metadata": {
+      "subreddit": "indiehackersindia",
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "AutoModerator",
+    "text": "How Organized Content Drives Visibility, Engagement, and Growth by Malafaat",
+    "url": "https://reddit.com/r/egyptstory/comments/1r9mnqz/how_organized_content_drives_visibility/",
+    "created_utc": 1771564696,
+    "engagement": {
+      "score": 2.0,
+      "comments": 0.0
+    },
+    "metadata": {
+      "subreddit": "egyptstory",
+      "keyword": "twitter growth"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "Wealthyshezzy1",
+    "text": "I Built a Free OpenClaw Directory (Made \u00a332.55 @ \u00a34.99/Month)",
+    "url": "https://reddit.com/r/buildinpublic/comments/1r9tvoq/i_built_a_free_openclaw_directory_made_3255/",
+    "created_utc": 1771589965,
+    "engagement": {
+      "score": 1.0,
+      "comments": 0.0
+    },
+    "metadata": {
+      "subreddit": "buildinpublic",
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "Certain_Tea_",
+    "text": "average openclaw/AI users online",
+    "url": "https://reddit.com/r/shitposting/comments/1r9tr6w/average_openclawai_users_online/",
+    "created_utc": 1771589585,
+    "engagement": {
+      "score": 1.0,
+      "comments": 1.0
+    },
+    "metadata": {
+      "subreddit": "shitposting",
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "Certain_Tea_",
+    "text": "Average openclaw users online",
+    "url": "https://reddit.com/r/singularity/comments/1r9tqd3/average_openclaw_users_online/",
+    "created_utc": 1771589513,
+    "engagement": {
+      "score": 30.0,
+      "comments": 7.0
+    },
+    "metadata": {
+      "subreddit": "singularity",
+      "keyword": "openclaw"
+    }
+  },
+  {
+    "source": "reddit",
+    "author": "qyqstc",
+    "text": "How to let openclaw access my iCloud drive",
+    "url": "https://reddit.com/r/openclaw/comments/1r9thjg/how_to_let_openclaw_access_my_icloud_drive/",
+    "created_utc": 1771588793,
+    "engagement": {
+      "score": 1.0,
+      "comments": 1.0
+    },
+    "metadata": {
+      "subreddit": "openclaw",
+      "keyword": "openclaw"
+    }
+  }
+]

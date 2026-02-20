@@ -1,0 +1,20 @@
+[
+  {
+    "source": "x",
+    "author": "founder_alpha",
+    "text": "What actually works for getting distribution as a tiny devtool startup in 2026?",
+    "url": "https://x.com/example/1",
+    "created_utc": 1768600000,
+    "engagement": {"likes": 34, "replies": 12, "shares": 4},
+    "metadata": {"topic": "distribution"}
+  },
+  {
+    "source": "x",
+    "author": "ai_ops_daily",
+    "text": "Teams ship AI agents fast, but fail on evals and guardrails. Agree?",
+    "url": "https://x.com/example/2",
+    "created_utc": 1768601000,
+    "engagement": {"likes": 19, "replies": 8, "shares": 3},
+    "metadata": {"topic": "ai agents"}
+  }
+]
