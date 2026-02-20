@@ -221,6 +221,7 @@ Unique applicable replies:
 - Recent reply prefixes are tracked in `~/.config/openclaw-twitter-helper/recent_replies.jsonl`.
 - Optional persona file: `~/.config/openclaw-twitter-helper/persona/openclaw.md`.
 - Double-reply protection: replied target IDs are tracked in `~/.config/openclaw-twitter-helper/replied_targets_<account>.json`.
+- Persistent dedupe log: `~/.config/openclaw-twitter-helper/replied_to_<account>.jsonl` (90-day check window).
 - To intentionally override manual reply guard: `post --in-reply-to <ID> --force-reply-target`.
 
 ## Integrated Reply Engine

@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 import urllib.error
 import urllib.parse
@@ -46,6 +46,7 @@ APPROVAL_DIR = TOKEN_CONFIG_DIR / "approval_queue"
 APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
 RECENT_REPLIES_CACHE = TOKEN_CONFIG_DIR / "recent_replies.jsonl"
 PERSONA_FILE = TOKEN_CONFIG_DIR / "persona" / "openclaw.md"
+REPLIED_DEDUPE_DAYS = 90
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_SIZE_MB = 5
 MAX_IMAGES = 5
@@ -1286,6 +1287,66 @@ def replied_targets_path(account: Optional[str] = None) -> Path:
     return TOKEN_CONFIG_DIR / f"replied_targets_{acct}.json"
 
 
+def replied_log_path(account: Optional[str] = None) -> Path:
+    acct = (account or ACTIVE_ACCOUNT or "default").strip() or "default"
+    return TOKEN_CONFIG_DIR / f"replied_to_{acct}.jsonl"
+
+
+def has_replied_to(tweet_id: str, days: int = REPLIED_DEDUPE_DAYS, account: Optional[str] = None) -> bool:
+    tid = str(tweet_id).strip()
+    if not tid:
+        return False
+    path = replied_log_path(account)
+    if not path.exists():
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("tweet_id", "")).strip() != tid:
+            continue
+        ts_raw = str(row.get("ts", "")).strip()
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_raw)
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= cutoff:
+            return True
+    return False
+
+
+def record_replied(
+    tweet_id: str,
+    reply_id: str = "",
+    source: str = "",
+    account: Optional[str] = None,
+) -> None:
+    tid = str(tweet_id).strip()
+    if not tid:
+        return
+    path = replied_log_path(account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "tweet_id": tid,
+        "reply_id": str(reply_id).strip(),
+        "source": str(source).strip(),
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def load_replied_targets(account: Optional[str] = None) -> Dict[str, Dict[str, str]]:
     path = replied_targets_path(account)
     if not path.exists():
@@ -1316,7 +1377,7 @@ def has_replied_to_target(target_id: str, account: Optional[str] = None) -> bool
     tid = str(target_id).strip()
     if not tid:
         return False
-    return tid in load_replied_targets(account)
+    return has_replied_to(tid, account=account) or tid in load_replied_targets(account)
 
 
 def mark_replied_target(
@@ -1337,6 +1398,7 @@ def mark_replied_target(
     }
     path = replied_targets_path(account)
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    record_replied(tweet_id=tid, reply_id=rid, source=source, account=account)
 
 
 def queued_target_ids() -> Set[str]:
@@ -1426,8 +1488,15 @@ def generate_unique_applicable_reply(
     generate_drafts_fn: Any,
     persona_text: str,
     recent_hours: int = 24,
+    is_discovery: bool = False,
 ) -> Dict[str, object]:
     draft_input = tweet_text if not context_text else f"{tweet_text}\n\nThread context:\n{context_text}"
+    if is_discovery:
+        draft_input = (
+            "Discovery mode: this tweet was proactively found during search. "
+            "Reply with a natural, hand-picked, proactive tone.\n\n"
+            + draft_input
+        )
     if persona_text.strip():
         draft_input = f"Persona guidance:\n{persona_text.strip()}\n\n{draft_input}"
     drafts = generate_drafts_fn(author=author, text=draft_input, draft_count=6) or []
@@ -1793,6 +1862,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                 generate_drafts_fn=generate_reply_drafts,
                 persona_text=persona_text,
                 recent_hours=24,
+                is_discovery=True,
             )
             draft = str(reply_eval.get("reply_text", "")).strip()
             confidence = int(reply_eval.get("confidence", 0))

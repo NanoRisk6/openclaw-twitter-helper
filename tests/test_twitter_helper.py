@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import sys
 import tempfile
 import types
@@ -884,6 +885,56 @@ class PostSanitizeTests(unittest.TestCase):
 
         self.assertFalse(result["unique_passed"])
         self.assertLess(result["confidence"], 60)
+
+    def test_generate_unique_applicable_reply_discovery_injects_tone_note(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_cache = twitter_helper.RECENT_REPLIES_CACHE
+            twitter_helper.RECENT_REPLIES_CACHE = Path(td) / "recent_replies.jsonl"
+            captured = {}
+            try:
+                def fake_generate(author, text, draft_count):
+                    captured["text"] = text
+                    return ["Vendor lock-in is exactly why local-first matters."]
+
+                twitter_helper.generate_unique_applicable_reply(
+                    author="alice",
+                    tweet_text="vendor lock-in again",
+                    context_text="",
+                    score=20,
+                    generate_drafts_fn=fake_generate,
+                    persona_text="open-source persona",
+                    is_discovery=True,
+                )
+            finally:
+                twitter_helper.RECENT_REPLIES_CACHE = original_cache
+
+        self.assertIn("Discovery mode:", captured["text"])
+
+    def test_has_replied_to_uses_90_day_window(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_active = twitter_helper.ACTIVE_ACCOUNT
+            twitter_helper.ACTIVE_ACCOUNT = "testacct"
+            original_log_path = twitter_helper.replied_log_path
+            custom_log = Path(td) / "replied_to_testacct.jsonl"
+            twitter_helper.replied_log_path = lambda account=None: custom_log
+            try:
+                old_row = {
+                    "ts": (twitter_helper.datetime.now(twitter_helper.timezone.utc) - twitter_helper.timedelta(days=91)).isoformat(),
+                    "tweet_id": "111",
+                }
+                new_row = {
+                    "ts": (twitter_helper.datetime.now(twitter_helper.timezone.utc) - twitter_helper.timedelta(days=2)).isoformat(),
+                    "tweet_id": "222",
+                }
+                custom_log.write_text(
+                    json.dumps(old_row) + "\n" + json.dumps(new_row) + "\n",
+                    encoding="utf-8",
+                )
+                self.assertFalse(twitter_helper.has_replied_to("111"))
+                self.assertTrue(twitter_helper.has_replied_to("222"))
+            finally:
+                twitter_helper.replied_log_path = original_log_path
+                twitter_helper.ACTIVE_ACCOUNT = original_active
 
 
 if __name__ == "__main__":
