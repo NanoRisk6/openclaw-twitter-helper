@@ -1,209 +1,164 @@
 # Open Claw Twitter Helper
 
-Friendly CLI for posting tweets and threads with interactive setup and a true browser OAuth wizard.
+[![Tests](https://github.com/NanoRisk6/openclaw-twitter-helper/actions/workflows/test.yml/badge.svg)](https://github.com/NanoRisk6/openclaw-twitter-helper/actions/workflows/test.yml)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-This repo now also includes the full OpenClaw Twitter Reply Engine helper (discovery, ranking, draft generation, and mentions workflows).
+OAuth2 CLI for OpenClaw Twitter auto-posts/replies.
 
-## Quickstart (Recommended)
+## Install
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py setup
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py app-settings
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py post --text "hello from Open Claw"
+git clone https://github.com/NanoRisk6/openclaw-twitter-helper.git
+cd openclaw-twitter-helper
+python3 -m pip install --upgrade pip
+pip install -e .
 ```
 
-`setup` now prompts to immediately launch OAuth2 browser login so users can generate OAuth2 access/refresh tokens in the same flow.
-`setup` also auto-sets OAuth scopes to `tweet.read tweet.write users.read offline.access` so users do not need to choose scopes.
-`auth-login` now runs `doctor` automatically after token exchange.
-
-## One-Command Mode For Open Claw
-
-When you want Open Claw (or a subagent) to fully handle check + repair + post:
+Optional reply-engine extras:
 
 ```bash
-/Users/matthew/openclaw-twitter-helper/run-twitter-helper --text "Open Claw status update"
+pip install -r requirements-reply-engine.txt
 ```
 
-Equivalent direct command:
+Set helper dir once for easier commands:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py run-twitter-helper --text "Open Claw status update"
+export HELPER_DIR="$(pwd)"
 ```
 
-This command will:
-- locate the helper + env paths,
-- run readiness checks,
-- launch OAuth browser repair if auth is broken,
-- post a unique public tweet by appending a UTC timestamp suffix.
-
-## After Restart (Fast Recovery)
-
-If Mac reboot caused auth/setup issues, run:
+## Fast Start
 
 ```bash
-/Users/matthew/openclaw-twitter-helper/run-twitter-helper restart
+$HELPER_DIR/run-twitter-helper restart
+$HELPER_DIR/run-twitter-helper openclaw-autopost --text "Open Claw is online"
 ```
 
-This recovery flow:
-- verifies credentials/config,
-- runs doctor,
-- launches OAuth repair if needed,
-- does **not** post a tweet.
+## Core Commands
 
-Aliases supported:
+Setup + OAuth:
 
 ```bash
-/Users/matthew/openclaw-twitter-helper/run-twitter-helper recover
-/Users/matthew/openclaw-twitter-helper/run-twitter-helper fix
+python src/twitter_helper.py setup
+python src/twitter_helper.py auth-login
+python src/twitter_helper.py doctor
 ```
 
-## Twitter App Settings (What to choose)
-
-Run this to print exact values from your current env:
+One-command mode (check/repair + post unique tweet):
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py app-settings
+python src/twitter_helper.py run-twitter-helper --text "Open Claw status update"
 ```
 
-Use these settings in Twitter Developer Portal:
-
-- `Type of App`: `Web App, Automated App or Bot` (Confidential client)
-- `App permissions`: `Read and write`
-- `OAuth 2.0 Client ID` -> `TWITTER_CLIENT_ID`
-- `OAuth 2.0 Client Secret` -> `TWITTER_CLIENT_SECRET`
-- `Callback URI / Redirect URL` -> `TWITTER_REDIRECT_URI`
-- `Website URL` -> `TWITTER_WEBSITE_URL`
-
-## Flexible Redirect Input
-
-In `setup`, you can enter redirect URI in flexible forms and it will normalize for you:
-
-- `127.0.0.1:3000`
-- `localhost:3000/callback`
-- `http://127.0.0.1:8080`
-- Full URL with path
-
-The helper converts these into a valid redirect URI (adds scheme/path as needed).
-
-## Commands
-
-Setup app config:
+Restart recovery (no post):
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py setup
+python src/twitter_helper.py restart-setup
+# wrapper aliases:
+./run-twitter-helper restart
+./run-twitter-helper recover
+./run-twitter-helper fix
 ```
 
-Show exact app settings:
+Post single tweet:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py app-settings
+python src/twitter_helper.py post --text "hello from Open Claw"
 ```
 
-Run browser OAuth wizard (gets/saves access + refresh tokens):
+Post reply tweet:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py auth-login
-```
-Use `--skip-doctor` if you do not want automatic diagnostics after login.
-Use `--auto-post` to post a unique confirmation tweet automatically after successful login+doctor.
-
-Note: OAuth1 keys/tokens from the portal are not used for this flow. This helper uses OAuth2 tokens generated via the consent link.
-
-Run diagnostics:
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py doctor
+python src/twitter_helper.py post --text "Thanks for the feedback" --in-reply-to 2024820748980748765
 ```
 
-Machine-readable status for Open Claw:
+Post from file:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py openclaw-status
+python src/twitter_helper.py post --file examples/tweet.txt
 ```
 
-Human walkthrough:
+Post thread (`---` separators):
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py walkthrough
-```
-
-Post one tweet:
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py post --text "hello from Open Claw"
-```
-
-Post a thread (`---` between tweets):
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py thread --file /Users/matthew/openclaw-twitter-helper/examples/thread.txt
-```
-
-## Integrated Reply Engine
-
-Install reply-engine dependencies:
-
-```bash
-cd /Users/matthew/openclaw-twitter-helper
-python3 -m pip install -r /Users/matthew/openclaw-twitter-helper/requirements-reply-engine.txt
-```
-
-Discover candidate conversations:
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-discover --keywords "open source,ai agents" --limit 30 --output /Users/matthew/openclaw-twitter-helper/data/discovered.json
-```
-
-Rank candidates:
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-rank --input /Users/matthew/openclaw-twitter-helper/data/discovered.json --keywords "open source,ai agents" --output /Users/matthew/openclaw-twitter-helper/data/ranked.json
-```
-
-Generate ideas markdown:
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-ideas --input /Users/matthew/openclaw-twitter-helper/data/ranked.json --top 20 --output /Users/matthew/openclaw-twitter-helper/data/reply_ideas.md
-```
-
-End-to-end reply pipeline:
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-run --keywords "open source,ai agents,twitter growth" --limit 30 --output /Users/matthew/openclaw-twitter-helper/data/reply_ideas_step.md
-```
-
-Draft/post reply for one tweet:
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-twitter-helper --tweet "https://twitter.com/OpenClawAI/status/2024820748980748765" --dry-run
-```
-
-Mentions workflow (draft-only default):
-
-```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1
+python src/twitter_helper.py thread --file examples/thread.txt
 ```
 
 Open Claw integration post:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py openclaw-autopost --text "Open Claw status update"
+python src/twitter_helper.py openclaw-autopost --text "Open Claw status update"
 ```
 
-Preview final output without posting:
+Dry-run:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py openclaw-autopost --text "Open Claw status update" --dry-run
+python src/twitter_helper.py openclaw-autopost --text "Open Claw status update" --dry-run
 ```
 
-Open Claw readiness check (doctor-style):
+Readiness check:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py openclaw
+python src/twitter_helper.py openclaw
+python src/twitter_helper.py openclaw --json
 ```
 
-Machine-readable readiness:
+## Integrated Reply Engine
+
+Discover:
 
 ```bash
-python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py openclaw --json
+python src/twitter_helper.py reply-discover --keywords "open source,ai agents" --limit 30 --output data/discovered.json
 ```
+
+Rank:
+
+```bash
+python src/twitter_helper.py reply-rank --input data/discovered.json --keywords "open source,ai agents" --output data/ranked.json
+```
+
+Ideas markdown:
+
+```bash
+python src/twitter_helper.py reply-ideas --input data/ranked.json --top 20 --output data/reply_ideas.md
+```
+
+End-to-end:
+
+```bash
+python src/twitter_helper.py reply-run --keywords "open source,ai agents,twitter growth" --limit 30 --output data/reply_ideas_step.md
+```
+
+Single tweet helper:
+
+```bash
+python src/twitter_helper.py reply-twitter-helper --tweet "https://twitter.com/OpenClawAI/status/2024820748980748765" --dry-run
+```
+
+Mentions workflow:
+
+```bash
+python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1
+```
+
+## Examples
+
+- `examples/tweet.txt`
+- `examples/thread.txt`
+- `examples/reply.txt`
+- `examples/thread_reply.txt`
+
+Wizard flow diagram: `docs/wizard-flow.md`
+
+## CI
+
+GitHub Actions workflow: `.github/workflows/test.yml`
+
+- runs `pytest`
+- runs `doctor` smoke check
+
+## Notes
+
+- OAuth1 keys/tokens are not used for primary posting flow.
+- OAuth2 callback URI must exactly match your app settings.
+- Public tweet text is sanitized to remove trailing `[openclaw-YYYYMMDD-HHMMSS-xxxx]` suffixes.

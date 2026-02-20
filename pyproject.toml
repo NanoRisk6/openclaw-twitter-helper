@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openclaw-twitter-helper"
+version = "0.1.0"
+description = "OAuth2 CLI for OpenClaw Twitter auto-posts/replies"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "tweepy",
+  "requests-oauthlib",
+  "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+reply_engine = [
+  "openai>=1.0.0",
+  "tqdm>=4.66.0",
+]
+
+[project.scripts]
+twitter-helper = "twitter_helper:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["twitter_helper"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["reply_engine*"]

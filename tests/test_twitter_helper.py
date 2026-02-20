@@ -47,6 +47,36 @@ class PostSanitizeTests(unittest.TestCase):
         self.assertRegex(text, r" • \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z$")
         self.assertNotRegex(text, r"\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]$")
 
+    def test_cmd_post_passes_reply_id(self) -> None:
+        captured = {}
+
+        def fake_post_with_retry(cfg, env_path, env_values, text, reply_to_id=None):
+            captured["reply_to_id"] = reply_to_id
+            captured["text"] = text
+            return cfg, (201, {"data": {"id": "tweet123"}})
+
+        cfg = twitter_helper.Config(
+            client_id="cid",
+            client_secret="secret",
+            access_token="token",
+            refresh_token="refresh",
+        )
+        args = type(
+            "Args",
+            (),
+            {"text": "Thanks!", "file": None, "in_reply_to": "2024820748980748765"},
+        )()
+
+        original_post_with_retry = twitter_helper.post_with_retry
+        twitter_helper.post_with_retry = fake_post_with_retry
+        try:
+            rc = twitter_helper.cmd_post(cfg, Path("."), {}, args)
+        finally:
+            twitter_helper.post_with_retry = original_post_with_retry
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["reply_to_id"], "2024820748980748765")
+
 
 if __name__ == "__main__":
     unittest.main()

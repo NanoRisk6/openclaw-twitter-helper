@@ -331,7 +331,7 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
     except Exception as exc:
         raise TwitterHelperError(
             "Reply engine not ready. Install dependencies with: "
-            "pip install -r /Users/matthew/openclaw-twitter-helper/requirements-reply-engine.txt"
+            "pip install -r requirements-reply-engine.txt"
         ) from exc
 
     if args.command == "reply-discover":
@@ -1005,7 +1005,13 @@ def cmd_post(
     validate_tweet_len(text)
     print(f"Posting tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
 
-    _, (status, body) = post_with_retry(cfg, env_path, env_values, text)
+    _, (status, body) = post_with_retry(
+        cfg,
+        env_path,
+        env_values,
+        text,
+        reply_to_id=args.in_reply_to,
+    )
 
     if status < 200 or status >= 300:
         raise TwitterHelperError(
@@ -1107,6 +1113,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_post = sub.add_parser("post", help="Post a single tweet")
     p_post.add_argument("--text", help="Tweet text")
     p_post.add_argument("--file", help="Path to text file")
+    p_post.add_argument(
+        "--in-reply-to",
+        help="Optional tweet ID to post as a reply",
+    )
 
     p_oc_auto = sub.add_parser(
         "openclaw-autopost",
