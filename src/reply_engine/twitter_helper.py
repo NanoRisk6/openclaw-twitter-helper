@@ -24,6 +24,23 @@ def extract_tweet_id(tweet: str) -> str:
     return m.group(1)
 
 
+def build_tweet_url(tweet_id: str, username: Optional[str] = None) -> str:
+    clean_id = str(tweet_id).strip()
+    if username:
+        return f"https://x.com/{username}/status/{clean_id}"
+    return f"https://x.com/i/web/status/{clean_id}"
+
+
+def get_authenticated_username(client: Any) -> Optional[str]:
+    try:
+        me = client.get_me(user_fields=["username"])
+    except Exception:
+        return None
+    if not me or not getattr(me, "data", None):
+        return None
+    return getattr(me.data, "username", None)
+
+
 def _required_env() -> Dict[str, Optional[str]]:
     load_dotenv()
     bearer = os.getenv("TWITTER_BEARER_TOKEN") or os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN")
@@ -245,7 +262,8 @@ def run_twitter_helper(
         return result
 
     reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
-    reply_url = f"https://twitter.com/OpenClawAI/status/{reply_id}"
+    auth_username = get_authenticated_username(client)
+    reply_url = build_tweet_url(reply_id, username=auth_username)
 
     row = {
         "tweet_id": tweet_id,
@@ -278,6 +296,7 @@ def run_mentions_workflow(
 
     client = build_client(require_write=post)
     mentions = fetch_mentions(client=client, handle=handle, limit=mention_limit)
+    auth_username = get_authenticated_username(client) or handle.lstrip("@")
     logged_ids = _load_logged_tweet_ids(log_file)
 
     results: List[Dict[str, Any]] = []
@@ -311,7 +330,7 @@ def run_mentions_workflow(
 
         if post and posted < max_posts:
             reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
-            reply_url = f"https://twitter.com/{handle.lstrip('@')}/status/{reply_id}"
+            reply_url = build_tweet_url(reply_id, username=auth_username)
             row["status"] = "posted"
             row["reply_id"] = reply_id
             row["reply_url"] = reply_url

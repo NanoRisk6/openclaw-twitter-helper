@@ -1274,7 +1274,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             "reply-twitter-helper",
             "reply-twitter-e2e",
         }:
-            return cmd_reply_engine(args)
+            try:
+                return cmd_reply_engine(args)
+            except Exception as exc:
+                raise TwitterHelperError(str(exc)) from exc
         if args.command == "auth-login":
             return cmd_auth_login(env_path, args)
         if args.command == "doctor":
