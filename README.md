@@ -106,6 +106,24 @@ python src/twitter_helper.py openclaw
 python src/twitter_helper.py openclaw --json
 ```
 
+Browse Twitter (default: recent mentions query for OpenClawAI):
+
+```bash
+python src/twitter_helper.py browse-twitter --handle OpenClawAI --limit 20
+```
+
+Browse with custom query:
+
+```bash
+python src/twitter_helper.py browse-twitter --query "openclaw OR xaetbgoad" --limit 20
+```
+
+Fetch one tweet by ID:
+
+```bash
+python src/twitter_helper.py browse-twitter --tweet 2024835587052613989 --json
+```
+
 ## Integrated Reply Engine
 
 Discover:

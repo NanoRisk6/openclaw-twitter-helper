@@ -141,6 +141,10 @@ def http_json(
         return exc.code, body
 
 
+def api_get_with_token(url: str, bearer_token: str) -> Tuple[int, Dict[str, object]]:
+    return http_json("GET", url, {"Authorization": f"Bearer {bearer_token}"})
+
+
 def get_basic_auth_header(client_id: str, client_secret: str) -> str:
     creds = f"{client_id}:{client_secret}".encode("utf-8")
     return "Basic " + base64.b64encode(creds).decode("utf-8")
@@ -148,6 +152,18 @@ def get_basic_auth_header(client_id: str, client_secret: str) -> str:
 
 def get_env_value(env: Dict[str, str], key: str, default: str = "") -> str:
     return os.getenv(key) or env.get(key, default)
+
+
+def get_read_bearer_token(env: Dict[str, str]) -> str:
+    token = (
+        get_env_value(env, "TWITTER_BEARER_TOKEN")
+        or get_env_value(env, "TWITTER_OAUTH2_ACCESS_TOKEN")
+    )
+    if not token:
+        raise TwitterHelperError(
+            "Missing TWITTER_BEARER_TOKEN (or TWITTER_OAUTH2_ACCESS_TOKEN) for browse-twitter."
+        )
+    return token
 
 
 def refresh_tokens(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> Config:
@@ -418,6 +434,78 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
         return 0
 
     raise TwitterHelperError(f"Unknown reply engine command: {args.command}")
+
+
+def cmd_browse_twitter(env_path: Path, args: argparse.Namespace) -> int:
+    env = load_env_file(env_path)
+    bearer = get_read_bearer_token(env)
+    limit = max(5, min(args.limit, 100))
+
+    if args.tweet:
+        status, body = api_get_with_token(
+            f"{API_BASE}/tweets/{args.tweet}"
+            "?expansions=author_id&tweet.fields=created_at,public_metrics,text&user.fields=username,name",
+            bearer,
+        )
+        if status >= 400:
+            raise TwitterHelperError(
+                f"browse tweet failed ({status}): {json.dumps(body, ensure_ascii=False)}"
+            )
+        print(json.dumps(body, ensure_ascii=False, indent=2))
+        return 0
+
+    query = args.query
+    if not query:
+        handle = args.handle.lstrip("@")
+        query = f"to:{handle} -from:{handle} -is:retweet"
+
+    encoded_q = urllib.parse.quote(query)
+    status, body = api_get_with_token(
+        f"{API_BASE}/tweets/search/recent"
+        f"?query={encoded_q}&max_results={limit}"
+        "&expansions=author_id&tweet.fields=created_at,public_metrics,conversation_id,text"
+        "&user.fields=username,name",
+        bearer,
+    )
+    if status == 401:
+        raise TwitterHelperError(
+            "browse-twitter unauthorized (401). "
+            "Check TWITTER_BEARER_TOKEN has v2 read access, or refresh OAuth2 with `auth-login`."
+        )
+    if status >= 400:
+        raise TwitterHelperError(
+            f"browse query failed ({status}): {json.dumps(body, ensure_ascii=False)}"
+        )
+
+    if args.json:
+        print(json.dumps(body, ensure_ascii=False, indent=2))
+        return 0
+
+    users = {}
+    includes = body.get("includes") if isinstance(body, dict) else None
+    if isinstance(includes, dict) and isinstance(includes.get("users"), list):
+        for u in includes["users"]:
+            if isinstance(u, dict):
+                users[str(u.get("id", ""))] = u.get("username", "unknown")
+
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, list) or not data:
+        print("No tweets found.")
+        return 0
+
+    print(f"Query: {query}")
+    print(f"Results: {len(data)}")
+    for i, t in enumerate(data, start=1):
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id", ""))
+        aid = str(t.get("author_id", ""))
+        username = users.get(aid, "unknown")
+        text = str(t.get("text", "")).replace("\n", " ").strip()
+        print(f"{i}. @{username} | {tid}")
+        print(f"   {text}")
+        print(f"   https://x.com/{username}/status/{tid}")
+    return 0
 
 
 def config_status(env_path: Path) -> Dict[str, object]:
@@ -1215,6 +1303,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restart recovery: repair setup/auth after reboot without posting",
     )
 
+    p_browse = sub.add_parser(
+        "browse-twitter",
+        help="Browse Twitter: mentions query (default), custom query, or one tweet by ID",
+    )
+    p_browse.add_argument("--tweet", help="Fetch one tweet by tweet ID")
+    p_browse.add_argument("--query", help="Custom recent-search query")
+    p_browse.add_argument("--handle", default="OpenClawAI", help="Handle for default mentions query")
+    p_browse.add_argument("--limit", type=int, default=20, help="Number of results (5-100)")
+    p_browse.add_argument("--json", action="store_true", help="Print raw JSON response")
+
     p_reply_discover = sub.add_parser(
         "reply-discover",
         help="Reply engine: discover candidate conversations",
@@ -1296,6 +1394,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_run_twitter_helper(env_path, args)
         if args.command == "restart-setup":
             return cmd_restart_setup(env_path, args)
+        if args.command == "browse-twitter":
+            return cmd_browse_twitter(env_path, args)
         if args.command in {
             "reply-discover",
             "reply-rank",
