@@ -805,7 +805,8 @@ def post_with_retry(
     run_tag = unique_marker("openclaw")
     fresh = ensure_auth(cfg, env_path, env_values)
     status, body = post_tweet(fresh, text, reply_to_id=reply_to_id, run_tag=run_tag)
-    if status in (401, 403):
+    # Retry once only for auth-expired failures.
+    if status == 401:
         fresh = refresh_tokens(fresh, env_path, env_values)
         status, body = post_tweet(fresh, text, reply_to_id=reply_to_id, run_tag=run_tag)
     return fresh, (status, body)
@@ -1030,6 +1031,8 @@ def cmd_post(
 ) -> int:
     text = read_text_from_args(args)
     text = sanitize_public_text(text)
+    if getattr(args, "unique", False):
+        text = make_unique_public_tweet(text)
 
     validate_tweet_len(text)
     print(f"Posting tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
@@ -1156,6 +1159,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_post = sub.add_parser("post", help="Post a single tweet")
     p_post.add_argument("--text", help="Tweet text")
     p_post.add_argument("--file", help="Path to text file")
+    p_post.add_argument(
+        "--unique",
+        action="store_true",
+        help="Append UTC timestamp suffix to avoid duplicate-content errors",
+    )
     p_post.add_argument(
         "--in-reply-to",
         help="Optional tweet ID to post as a reply",
