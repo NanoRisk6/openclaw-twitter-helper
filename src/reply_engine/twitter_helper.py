@@ -121,6 +121,23 @@ TENSION_TEMPLATES = [
 ]
 
 
+def _resolve_openai_api_key() -> str:
+    return (
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("CODEX_OPENAI_API_KEY")
+        or os.getenv("OPENAI_KEY")
+        or ""
+    ).strip()
+
+
+def _resolve_openai_model() -> str:
+    return (
+        os.getenv("OPENAI_MODEL")
+        or os.getenv("CODEX_OPENAI_MODEL")
+        or "gpt-4.1-mini"
+    ).strip()
+
+
 def extract_tweet_id(tweet: str) -> str:
     m = TWEET_ID_RE.search(tweet)
     if not m:
@@ -381,7 +398,7 @@ def _source_frame(text: str) -> Dict[str, str]:
 
 
 def _openai_drafts(author: str, text: str, n: int) -> Optional[List[str]]:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = _resolve_openai_api_key()
     if not api_key:
         return None
 
@@ -390,7 +407,7 @@ def _openai_drafts(author: str, text: str, n: int) -> Optional[List[str]]:
     except Exception:
         return None
 
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    model = _resolve_openai_model()
     client = OpenAI(api_key=api_key)
     prompt = (
         "Generate concise but creative Twitter reply drafts for OpenClawAI. "
@@ -417,14 +434,14 @@ def _openai_drafts(author: str, text: str, n: int) -> Optional[List[str]]:
 
 
 def _openai_mode_drafts(author: str, text: str, modes: List[str]) -> Optional[Dict[str, str]]:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = _resolve_openai_api_key()
     if not api_key:
         return None
     try:
         from openai import OpenAI
     except Exception:
         return None
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    model = _resolve_openai_model()
     client = OpenAI(api_key=api_key)
     modes_csv = ", ".join(modes)
     prompt = (

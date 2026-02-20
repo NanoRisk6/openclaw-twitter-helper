@@ -49,18 +49,29 @@ Skill file:
 
 ## Fast Start
 
+One-command UX (recommended):
+
+```bash
+./twitter-engine           # safe autopilot preview (dry-run, no post)
+./twitter-engine live      # live autopilot (can post/reply)
+```
+
+Simple manual overrides:
+
+```bash
+./twitter-engine start post
+./twitter-engine start reply
+./twitter-engine health
+./twitter-engine set-bearer-token
+./twitter-engine set-openai-key
+```
+
+Legacy/manual commands still work:
+
 ```bash
 $HELPER_DIR/twitter-engine restart
 $HELPER_DIR/twitter-engine diagnose
 $HELPER_DIR/twitter-engine engine-autopost --text "Twitter Engine is online"
-```
-
-Even simpler day-to-day commands:
-
-```bash
-./twitter-engine kit
-./twitter-engine start
-./twitter-engine health
 ./twitter-engine reply-now
 ./twitter-engine inspire --topic "OpenClaw" --web-query "ai agents automation reliability"
 ./twitter-engine reply-engine start --mode dry-run
@@ -145,7 +156,7 @@ One-command mode (check/repair + post unique tweet):
 python src/twitter_helper.py twitter-engine --text "Status update"
 ```
 
-Auto decision mode (default when no `--text`/`--file`):
+Auto decision mode:
 
 - Runs diagnose if posting health is not ready
 - Tries a safe reply draft if reply scanning is ready
@@ -153,12 +164,12 @@ Auto decision mode (default when no `--text`/`--file`):
 - Falls back to posting with optional internet inspiration (Google News RSS + HN)
 
 ```bash
-./twitter-engine
-./twitter-engine --mode diagnose
-./twitter-engine --mode reply
-./twitter-engine --mode post --text "status update"
-./twitter-engine --mode post --web-query "solana ai agents latency reliability"
-./twitter-engine --mode post --no-web-inspiration
+./twitter-engine                 # safe preview mode
+./twitter-engine live            # live auto-decide mode
+./twitter-engine start diagnose
+./twitter-engine start reply
+./twitter-engine start post
+./twitter-engine post --text "status update"
 ```
 
 Restart recovery (no post):

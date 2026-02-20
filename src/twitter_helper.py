@@ -106,21 +106,18 @@ FROG_PERSONA = {
         "scroll-stopping truth:",
     ],
     "closers": [
-        "what's your move?",
         "prove me wrong.",
-        "thread if you're based.",
-        "frog or pass.",
-        "delta or cope.",
-        "gm if you felt this.",
+        "track the delta.",
+        "ship it and measure it.",
+        "your move.",
     ],
     "slang_bank": [
         "taxing",
         "cooked",
         "ngmi",
-        "wagmi but make it chaotic",
+        "wagmi",
         "send it",
         "ratio incoming",
-        "frog army assemble",
     ],
     "emoji_density": 0.30,
 }
@@ -158,6 +155,9 @@ VOICE_CONFIGS: Dict[str, Optional[Dict[str, object]]] = {
         "emoji_density": 0.20,
         "hooks": ["execution note:", "pipeline update:", "track this:"],
         "slang_terms": ["delta", "pipeline", "constraints"],
+        "hook_chance": 0.22,
+        "closer_chance": 0.38,
+        "slang_chance": 0.42,
         "extra_tail": "",
     },
     "sage": {
@@ -165,6 +165,9 @@ VOICE_CONFIGS: Dict[str, Optional[Dict[str, object]]] = {
         "emoji_density": 0.15,
         "hooks": ["the pattern under:", "counterintuitively,", "long-term frogs know:"],
         "slang_terms": ["pattern", "compounding", "signal"],
+        "hook_chance": 0.24,
+        "closer_chance": 0.40,
+        "slang_chance": 0.35,
         "extra_tail": "",
     },
     "shitposter": {
@@ -188,11 +191,6 @@ HIGH_SIGNAL_LEXICON = {
     "improvement": "delta",
     "important": "taxing",
     "valuable": "based",
-    "consider": "prove me wrong",
-    "note": "watch this",
-    "actually": "real ones know",
-    "essentially": "counterintuitively",
-    "basically": "straight up",
 }
 ANTI_BORING_BANNED = {
     "you're not wrong",
@@ -1279,6 +1277,12 @@ def generate_reflective_post_text(
         "Noise scales quickly. Signal scales profitably.",
         "Cute demo, brittle loop. Boring loop, durable edge.",
     ]
+    proof_openers = [
+        "Data point:",
+        "Observed pattern:",
+        "Production note:",
+        "Signal check:",
+    ]
     anti_repeat_phrases = {
         "hot take:",
         "counterintuitive lesson:",
@@ -1345,13 +1349,21 @@ def generate_reflective_post_text(
     candidates: List[Tuple[str, float, str, str]] = []
     best_attempt: Optional[Tuple[str, float, str, str]] = None
 
-    style_pool = ["thesis_tactic_question", "contrast", "prediction", "challenge", "signal"]
+    style_pool = [
+        "thesis_tactic_question",
+        "contrast",
+        "prediction",
+        "challenge",
+        "signal",
+        "claim_proof_question",
+        "micro_story",
+    ]
     if style == "contrarian":
-        style_pool = ["contrast", "prediction", "challenge"]
+        style_pool = ["contrast", "prediction", "challenge", "claim_proof_question"]
     elif style == "operator":
-        style_pool = ["thesis_tactic_question", "signal", "challenge"]
+        style_pool = ["thesis_tactic_question", "signal", "claim_proof_question"]
     elif style == "story":
-        style_pool = ["prediction", "challenge", "thesis_tactic_question"]
+        style_pool = ["prediction", "challenge", "micro_story"]
 
     total_attempts = max(1, int(max_attempts))
     ensemble_n = max(1, min(8, int(ensemble_size)))
@@ -1384,6 +1396,18 @@ def generate_reflective_post_text(
                     f"Builder challenge: ship one measurable improvement around {term} in 24 hours. "
                     f"Post the before/after metric, not motivation."
                 )
+            elif chosen_style == "claim_proof_question":
+                term = rng.choice(inspiration_terms) if inspiration_terms else "context quality"
+                text = (
+                    f"{rng.choice(proof_openers)} teams usually over-focus on model size while {term} drives outcomes. "
+                    f"Run one constrained experiment this week and track the delta. {rng.choice(viral_closers)}"
+                )
+            elif chosen_style == "micro_story":
+                term = rng.choice(inspiration_terms) if inspiration_terms else "handoff quality"
+                text = (
+                    f"Last week we tightened {term} and saw cleaner outputs with fewer retries. "
+                    f"The gain came from fewer branches, not bigger prompts. {rng.choice(viral_closers)}"
+                )
             else:
                 if len(inspiration_terms) >= 2:
                     a, b = rng.sample(inspiration_terms[:10], 2)
@@ -1391,7 +1415,7 @@ def generate_reflective_post_text(
                     a, b = ("signal", "execution")
                 text = f"Signal this week: {a}. Constraint that matters: {b}. {rng.choice(viral_closers)}"
 
-            text = sanitize_public_text(text)
+            text = polish_tweet_text(text)
             if voice == "auto":
                 trial_voice = _resolve_voice_name("auto")
             elif ensemble_n > 1 and idx % 2 == 1:
@@ -3398,28 +3422,49 @@ def _voice_persona(voice: str) -> Dict[str, object]:
         "closers": list(FROG_PERSONA["closers"]),
         "slang_bank": slang_bank,
         "emoji_density": float(cfg.get("emoji_density", FROG_PERSONA["emoji_density"])),
+        "hook_chance": float(cfg.get("hook_chance", 0.40)),
+        "closer_chance": float(cfg.get("closer_chance", 0.60)),
+        "slang_chance": float(cfg.get("slang_chance", 0.70)),
         "extra_tail": str(cfg.get("extra_tail", "")).strip(),
         "resolved_voice": resolved,
     }
+
+
+def polish_tweet_text(text: str) -> str:
+    out = sanitize_public_text(text)
+    out = re.sub(r"[ \t]+", " ", out)
+    out = re.sub(r"([.!?])\1{1,}", r"\1", out)
+    out = re.sub(r"\s+([,.;!?])", r"\1", out)
+    out = re.sub(r"\s{2,}", " ", out)
+    out = out.replace("..", ".")
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
 
 
 def inject_frog_chaos(draft: str, topic_entropy: float, persona: Optional[Dict[str, object]] = None) -> str:
     p = persona if isinstance(persona, dict) else FROG_PERSONA
     rng = random.SystemRandom()
     text = str(draft).strip()
-    if rng.random() < 0.40:
+    if rng.random() < float(p.get("hook_chance", 0.40)):
         hooks = [str(x) for x in p.get("hooks", FROG_PERSONA["hooks"])]
         text = f"{rng.choice(hooks)} {text}"
-    if rng.random() < 0.60:
+    has_question = "?" in text
+    closer_chance = float(p.get("closer_chance", 0.60))
+    if has_question:
+        closer_chance = min(0.12, closer_chance * 0.25)
+    if rng.random() < closer_chance:
         closers = [str(x) for x in p.get("closers", FROG_PERSONA["closers"])]
-        text = f"{text}\n\n{rng.choice(closers)}"
-    if ("sol" in text.lower() or topic_entropy > 0.75) and rng.random() < 0.70:
+        text = f"{text} {rng.choice(closers)}"
+    if ("sol" in text.lower() or topic_entropy > 0.75) and rng.random() < float(p.get("slang_chance", 0.70)):
         slang_bank = [str(x) for x in p.get("slang_bank", FROG_PERSONA["slang_bank"])]
         slang = rng.choice(slang_bank)
-        text = text.replace(".", f". {slang}.", 1) if "." in text else f"{text} {slang}"
-    if rng.random() < float(p.get("emoji_density", FROG_PERSONA["emoji_density"])):
+        if "." in text:
+            text = text.replace(".", f". {slang}.", 1)
+        else:
+            text = f"{text} {slang}."
+    if "🐸" not in text and rng.random() < float(p.get("emoji_density", FROG_PERSONA["emoji_density"])):
         text = text + " 🐸"
-    return sanitize_public_text(text)
+    return polish_tweet_text(text)
 
 
 def apply_voice(raw: str, voice: str = "auto", topic_entropy: float = 0.0, sharpen: bool = False) -> str:
@@ -3430,7 +3475,7 @@ def apply_voice(raw: str, voice: str = "auto", topic_entropy: float = 0.0, sharp
     tail = str(persona.get("extra_tail", "")).strip()
     if tail and random.SystemRandom().random() < 0.5:
         text = f"{text}\n\n{tail}"
-    return sanitize_public_text(text)
+    return polish_tweet_text(text)
 
 
 def _http_get_bytes(
@@ -4003,6 +4048,107 @@ def cmd_set_bearer_token(env_path: Path, args: argparse.Namespace) -> int:
         return 1
     print("Bearer token verification passed.")
     return 0
+
+
+def cmd_set_openai_key(env_path: Path, args: argparse.Namespace) -> int:
+    env = load_env_file(env_path)
+    api_key = (getattr(args, "api_key", None) or "").strip()
+    if not api_key:
+        api_key = getpass.getpass("Paste OPENAI_API_KEY: ").strip()
+    if not api_key:
+        raise TwitterHelperError("No OpenAI API key provided.")
+
+    env["OPENAI_API_KEY"] = api_key
+    env["CODEX_OPENAI_API_KEY"] = api_key
+    model = str(getattr(args, "model", "") or "").strip()
+    if model:
+        env["OPENAI_MODEL"] = model
+        env["CODEX_OPENAI_MODEL"] = model
+    elif not get_env_value(env, "OPENAI_MODEL"):
+        env["OPENAI_MODEL"] = "gpt-4.1-mini"
+        env["CODEX_OPENAI_MODEL"] = "gpt-4.1-mini"
+    elif not get_env_value(env, "CODEX_OPENAI_MODEL"):
+        env["CODEX_OPENAI_MODEL"] = get_env_value(env, "OPENAI_MODEL", "gpt-4.1-mini")
+
+    write_env_file(env_path, env)
+    print(f"Saved OPENAI_API_KEY to {env_path}")
+    print(f"OPENAI_MODEL={env.get('OPENAI_MODEL', 'gpt-4.1-mini')}")
+    return 0
+
+
+def cmd_codex_check(env_path: Path) -> int:
+    env = load_env_file(env_path)
+    key = (
+        get_env_value(env, "OPENAI_API_KEY")
+        or get_env_value(env, "CODEX_OPENAI_API_KEY")
+        or get_env_value(env, "OPENAI_KEY")
+    )
+    model = (
+        get_env_value(env, "OPENAI_MODEL")
+        or get_env_value(env, "CODEX_OPENAI_MODEL")
+        or "gpt-4.1-mini"
+    )
+    has_key = bool(key)
+    try:
+        import openai as _openai  # type: ignore
+        sdk_ok = True
+        sdk_ver = str(getattr(_openai, "__version__", "unknown"))
+    except Exception:
+        sdk_ok = False
+        sdk_ver = "missing"
+
+    print("Codex AI Check")
+    print(f"Env file: {env_path}")
+    print(f"OpenAI key configured: {has_key}")
+    print(f"Model: {model}")
+    print(f"openai SDK available: {sdk_ok} ({sdk_ver})")
+    if not has_key:
+        print("Fix: ./twitter-engine set-openai-key")
+        return 1
+    if not sdk_ok:
+        print("Fix: pip install openai")
+        return 1
+    print("AI paths are ready for Codex + twitter-engine.")
+    return 0
+
+
+def cmd_openclaw_tick(env_path: Path, args: argparse.Namespace) -> int:
+    """
+    OpenClaw integration entrypoint:
+    one tick decides diagnose/reply/gather/post and emits strict JSON.
+    """
+    kit_args = argparse.Namespace(
+        mode=str(getattr(args, "mode", "auto") or "auto"),
+        text=getattr(args, "text", None),
+        file=getattr(args, "file", None),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        json=True,
+        reply_handle=str(getattr(args, "reply_handle", "OpenClawAI") or "OpenClawAI"),
+        reply_since_id=getattr(args, "reply_since_id", None),
+        log_path=str(getattr(args, "log_path", "data/replies.jsonl") or "data/replies.jsonl"),
+        report_path=str(getattr(args, "report_path", "data/mentions_report.json") or "data/mentions_report.json"),
+        gather_when_no_reply=bool(getattr(args, "gather_when_no_reply", True)),
+        gather_query=str(
+            getattr(args, "gather_query", 'openclaw OR "local ai agent" lang:en -is:retweet')
+            or 'openclaw OR "local ai agent" lang:en -is:retweet'
+        ),
+        gather_limit=int(getattr(args, "gather_limit", 20)),
+        gather_max_pages=int(getattr(args, "gather_max_pages", 1)),
+        gather_output=str(getattr(args, "gather_output", "data/engine_data_snapshot.json") or "data/engine_data_snapshot.json"),
+        web_inspiration=bool(getattr(args, "web_inspiration", True)),
+        web_query=str(getattr(args, "web_query", "ai agents automation reliability") or "ai agents automation reliability"),
+        web_items=int(getattr(args, "web_items", 8)),
+        style=str(getattr(args, "style", "auto") or "auto"),
+        voice=str(getattr(args, "voice", "auto") or "auto"),
+        viral_pack=str(getattr(args, "viral_pack", "") or ""),
+        anti_boring=bool(getattr(args, "anti_boring", False)),
+        sharpen=bool(getattr(args, "sharpen", False)),
+        judge_threshold=float(getattr(args, "judge_threshold", 82.0)),
+        max_attempts=int(getattr(args, "max_attempts", 7)),
+        ensemble=int(getattr(args, "ensemble", 1)),
+        viral_boost=bool(getattr(args, "viral_boost", False)),
+    )
+    return cmd_kit(env_path, kit_args)
 
 
 def cmd_engine_status(env_path: Path) -> int:
@@ -5099,6 +5245,53 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip live API verification after saving token",
     )
+    p_set_openai = sub.add_parser(
+        "set-openai-key",
+        help="Set or replace OPENAI_API_KEY in env file",
+    )
+    p_set_openai.add_argument(
+        "--api-key",
+        help="OpenAI API key value (if omitted, prompt securely)",
+    )
+    p_set_openai.add_argument(
+        "--model",
+        default="",
+        help="Optional OPENAI_MODEL override (default keeps existing or gpt-4.1-mini)",
+    )
+    sub.add_parser("codex-check", help="Validate Codex/OpenAI AI-generation readiness")
+    p_tick = sub.add_parser(
+        "openclaw-tick",
+        help="OpenClaw automation entrypoint: one engine tick with strict JSON output",
+    )
+    p_tick.add_argument(
+        "--mode",
+        choices=["auto", "post", "reply", "diagnose"],
+        default="auto",
+    )
+    p_tick.add_argument("--text")
+    p_tick.add_argument("--file")
+    p_tick.add_argument("--dry-run", action="store_true")
+    p_tick.add_argument("--reply-handle", default="OpenClawAI")
+    p_tick.add_argument("--reply-since-id")
+    p_tick.add_argument("--log-path", default="data/replies.jsonl")
+    p_tick.add_argument("--report-path", default="data/mentions_report.json")
+    p_tick.add_argument("--gather-when-no-reply", action=argparse.BooleanOptionalAction, default=True)
+    p_tick.add_argument("--gather-query", default='openclaw OR "local ai agent" lang:en -is:retweet')
+    p_tick.add_argument("--gather-limit", type=int, default=20)
+    p_tick.add_argument("--gather-max-pages", type=int, default=1)
+    p_tick.add_argument("--gather-output", default="data/engine_data_snapshot.json")
+    p_tick.add_argument("--web-inspiration", action=argparse.BooleanOptionalAction, default=True)
+    p_tick.add_argument("--web-query", default="ai agents automation reliability")
+    p_tick.add_argument("--web-items", type=int, default=8)
+    p_tick.add_argument("--style", choices=["auto", "contrarian", "operator", "story"], default="auto")
+    p_tick.add_argument("--voice", choices=["auto", "chaotic", "degen", "based", "savage", "operator", "sage", "shitposter"], default="auto")
+    p_tick.add_argument("--viral-pack", choices=["auto", "light", "medium", "nuclear", "alpha", "chaos", "infinite"], default="")
+    p_tick.add_argument("--anti-boring", action="store_true")
+    p_tick.add_argument("--sharpen", action="store_true")
+    p_tick.add_argument("--judge-threshold", type=float, default=82.0)
+    p_tick.add_argument("--max-attempts", type=int, default=7)
+    p_tick.add_argument("--ensemble", type=int, default=1)
+    p_tick.add_argument("--viral-boost", action="store_true")
     p_diag = sub.add_parser(
         "auto-diagnose",
         help="Auto-diagnose posting and replying readiness, with optional OAuth2 self-repair",
@@ -5699,6 +5892,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_walkthrough()
         if args.command == "set-bearer-token":
             return cmd_set_bearer_token(env_path, args)
+        if args.command == "set-openai-key":
+            return cmd_set_openai_key(env_path, args)
+        if args.command == "codex-check":
+            return cmd_codex_check(env_path)
+        if args.command == "openclaw-tick":
+            return cmd_openclaw_tick(env_path, args)
         if args.command == "memory":
             return cmd_memory(args)
         if args.command in {"engine-status", "openclaw-status"}:

@@ -543,6 +543,19 @@ def _parse_created_at(value: str) -> Optional[datetime]:
     raw = str(value or "").strip()
     if not raw:
         return None
+
+
+def _clean_anchor_text(text: str) -> str:
+    raw = re.sub(r"\s+", " ", str(text or "").strip())
+    raw = re.sub(r"https?://\S+", "", raw).strip()
+    if not raw:
+        return "the core claim"
+    words = raw.split(" ")
+    stop = {"than", "and", "or", "but", "if", "when", "then", "to", "for", "with", "of", "in", "on", "at"}
+    while len(words) > 4 and words[-1].lower().strip(".,:;!?") in stop:
+        words.pop()
+    out = " ".join(words[:12]).strip(" ,;:.!?")
+    return out or "the core claim"
     try:
         if raw.endswith("Z"):
             raw = raw[:-1] + "+00:00"
@@ -653,8 +666,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         except Exception:
             pass
     infinite_mode = str(pack_name or "").lower() == "infinite"
-    if infinite_mode and not args.mode:
-        args.mode = "post"
+    if infinite_mode and bool(getattr(args, "auto_relax_post", True)):
+        # Infinite mode is high-precision: do not post relaxed fallback drafts.
+        args.auto_relax_post = False
 
     def _priority_key(row: Dict[str, Any]) -> Tuple[int, int]:
         created = _parse_created_at(str(row.get("created_at", "")))
@@ -838,7 +852,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             continue
 
         if rh.has_ungrounded_numeric_claim(chosen, f"{source_text}\n{context_text}"):
-            focus = rh._focus_phrase(source_text, words=10)
+            focus = _clean_anchor_text(rh._quote_fragment(source_text, max_words=10))
             numeric_guard_templates = [
                 f"@{author} per the post: {focus}. What metric moved first after this changed?",
                 f"@{author} thread signal: {focus}. Which leading indicator improved first once this shipped?",

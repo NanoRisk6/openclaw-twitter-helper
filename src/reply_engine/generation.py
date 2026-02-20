@@ -22,11 +22,15 @@ def _template_ideas(scored: ScoredCandidate) -> List[str]:
 
 
 def _llm_ideas(scored: ScoredCandidate, n: int = 3) -> List[str]:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = (
+        os.getenv("OPENAI_API_KEY")
+        or os.getenv("CODEX_OPENAI_API_KEY")
+        or os.getenv("OPENAI_KEY")
+    )
     if not api_key or OpenAI is None:
         return _template_ideas(scored)
 
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    model = os.getenv("OPENAI_MODEL") or os.getenv("CODEX_OPENAI_MODEL") or "gpt-4.1-mini"
     client = OpenAI(api_key=api_key)
 
     c = scored.candidate
