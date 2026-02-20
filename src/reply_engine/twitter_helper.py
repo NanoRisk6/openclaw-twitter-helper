@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -85,16 +86,6 @@ def build_tweet_url(tweet_id: str, username: Optional[str] = None) -> str:
     return f"https://x.com/i/web/status/{clean_id}"
 
 
-def get_authenticated_username(client: Any) -> Optional[str]:
-    try:
-        me = client.get_me(user_fields=["username"])
-    except Exception:
-        return None
-    if not me or not getattr(me, "data", None):
-        return None
-    return getattr(me.data, "username", None)
-
-
 def _required_env() -> Dict[str, Optional[str]]:
     load_dotenv()
     bearer = os.getenv("TWITTER_BEARER_TOKEN") or os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN")
@@ -109,13 +100,7 @@ def _required_env() -> Dict[str, Optional[str]]:
                     bearer = str(parsed.get("access_token", "")).strip() or bearer
         except Exception:
             pass
-    return {
-        "TWITTER_BEARER_TOKEN": bearer,
-        "TWITTER_API_KEY": os.getenv("TWITTER_API_KEY"),
-        "TWITTER_API_SECRET": os.getenv("TWITTER_API_SECRET"),
-        "TWITTER_ACCESS_TOKEN": os.getenv("TWITTER_ACCESS_TOKEN"),
-        "TWITTER_ACCESS_SECRET": os.getenv("TWITTER_ACCESS_SECRET"),
-    }
+    return {"TWITTER_BEARER_TOKEN": bearer}
 
 
 def _account_name() -> str:
@@ -145,7 +130,7 @@ def save_last_mention_id(tweet_id: str, account: Optional[str] = None) -> None:
     path.write_text(str(tweet_id).strip(), encoding="utf-8")
 
 
-def build_client(require_write: bool = True) -> Any:
+def build_client() -> Any:
     try:
         import tweepy
     except Exception as exc:
@@ -162,10 +147,6 @@ def build_client(require_write: bool = True) -> Any:
 
     return tweepy.Client(
         bearer_token=env["TWITTER_BEARER_TOKEN"],
-        consumer_key=env["TWITTER_API_KEY"],
-        consumer_secret=env["TWITTER_API_SECRET"],
-        access_token=env["TWITTER_ACCESS_TOKEN"],
-        access_token_secret=env["TWITTER_ACCESS_SECRET"],
         wait_on_rate_limit=True,
     )
 
@@ -426,7 +407,7 @@ def generate_reply_drafts(author: str, text: str, draft_count: int) -> List[str]
 
 def run_reply_many_ways(tweet: str, modes: List[str]) -> Dict[str, Any]:
     tweet_id = extract_tweet_id(tweet)
-    client = build_client(require_write=False)
+    client = build_client()
     ctx = fetch_tweet_context(client=client, tweet_id=tweet_id)
     variants = generate_reply_many_ways(author=ctx["author"], text=ctx["text"], modes=modes)
     return {
@@ -436,65 +417,6 @@ def run_reply_many_ways(tweet: str, modes: List[str]) -> Dict[str, Any]:
         "modes": list(variants.keys()),
         "replies": variants,
     }
-
-
-def post_reply(client: Any, tweet_id: str, text: str) -> str:
-    res = client.create_tweet(text=text, in_reply_to_tweet_id=tweet_id)
-    if not res or not res.data or "id" not in res.data:
-        raise RuntimeError("Twitter create_tweet returned no reply id")
-    return str(res.data["id"])
-
-
-def verify_reply_visible(
-    client: Any,
-    reply_id: str,
-    expected_username: Optional[str] = None,
-    attempts: int = 3,
-    delay_seconds: float = 1.0,
-) -> Dict[str, str]:
-    last_error = "unknown"
-    for attempt in range(1, max(1, attempts) + 1):
-        try:
-            res = client.get_tweet(
-                id=reply_id,
-                expansions=["author_id"],
-                tweet_fields=["author_id", "created_at"],
-                user_fields=["username"],
-            )
-        except Exception as exc:
-            last_error = str(exc)
-            if attempt < attempts:
-                time.sleep(delay_seconds)
-            continue
-
-        if res and getattr(res, "data", None):
-            author_id = getattr(res.data, "author_id", None)
-            username = None
-            includes = getattr(res, "includes", None) or {}
-            users = includes.get("users", []) if isinstance(includes, dict) else []
-            for user in users:
-                if getattr(user, "id", None) == author_id:
-                    username = getattr(user, "username", None)
-                    break
-
-            if expected_username and username and username != expected_username:
-                raise RuntimeError(
-                    f"Reply author mismatch after post: expected @{expected_username}, got @{username}."
-                )
-
-            return {
-                "username": username or "",
-                "url": build_tweet_url(reply_id, username=username),
-            }
-
-        if attempt < attempts:
-            time.sleep(delay_seconds)
-
-    raise RuntimeError(
-        "Twitter returned a reply ID but visibility verification failed. "
-        "Do not assume the reply is live. "
-        f"Last error: {last_error}"
-    )
 
 
 def log_reply(log_path: Path, row: Dict[str, Any]) -> None:
@@ -545,7 +467,7 @@ def _queue_path(qid: str) -> Path:
 
 
 def queue_reply_candidate(item: Dict[str, Any]) -> str:
-    qid = str(int(time.time() * 1000))[-8:]
+    qid = uuid.uuid4().hex[:8]
     payload = dict(item)
     payload["id"] = qid
     payload["queued_at"] = datetime.now().isoformat()
@@ -573,6 +495,35 @@ def approval_queue_target_ids() -> Set[str]:
         if tid:
             out.add(tid)
     return out
+
+
+def cleanup_queue(remove_duplicates: bool = True) -> Dict[str, Any]:
+    rows = list_approval_queue()
+    seen_targets: Set[str] = set()
+    removed = 0
+    kept = 0
+    reasons = {"invalid": 0, "duplicate_target": 0, "already_replied": 0}
+    for row in rows:
+        qid = str(row.get("id", "")).strip()
+        path = Path(str(row.get("_path", "")))
+        tweet_id = str(row.get("tweet_id", "") or row.get("in_reply_to", "")).strip()
+        text = str(row.get("text", "")).strip()
+        reason = ""
+        if not qid or not tweet_id or not text:
+            reason = "invalid"
+        elif has_replied_to(tweet_id):
+            reason = "already_replied"
+        elif remove_duplicates and tweet_id in seen_targets:
+            reason = "duplicate_target"
+        if reason:
+            reasons[reason] += 1
+            removed += 1
+            if path.exists():
+                path.unlink()
+            continue
+        seen_targets.add(tweet_id)
+        kept += 1
+    return {"removed": removed, "kept": kept, "reasons": reasons}
 
 
 def score_discovery_candidate(item: Dict[str, Any]) -> int:
@@ -800,7 +751,7 @@ def run_twitter_helper(
     log_path: str = "data/replies.jsonl",
 ) -> Dict[str, Any]:
     tweet_id = extract_tweet_id(tweet)
-    client = build_client(require_write=False)
+    client = build_client()
     ctx = fetch_tweet_context(client=client, tweet_id=tweet_id)
 
     drafts = generate_reply_drafts(
@@ -869,7 +820,7 @@ def run_mentions_workflow(
     log_file = Path(log_path)
     report_file = Path(report_path)
 
-    client = build_client(require_write=False)
+    client = build_client()
     effective_since_id = since_id or load_last_mention_id()
     source = "native_mentions"
     try:
@@ -1026,7 +977,7 @@ def run_discovery_workflow(
 ) -> Dict[str, Any]:
     log_file = Path(log_path)
     report_file = Path(report_path)
-    client = build_client(require_write=False)
+    client = build_client()
     rows = fetch_discovery_search(client=client, query=query, limit=limit, since_id=since_id)
     logged_ids = _load_logged_tweet_ids(log_file)
     queued_ids = approval_queue_target_ids()

@@ -14,6 +14,7 @@ from .pipeline import (
 )
 from .twitter_helper import (
     approve_queue,
+    cleanup_queue,
     DEFAULT_REPLY_MODES,
     list_approval_queue,
     run_reply_many_ways,
@@ -110,6 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
     qapprove.add_argument("--dry-run", action="store_true")
     qapprove.add_argument("--max-posts", type=int, default=None)
     qapprove.add_argument("--log-path", default="data/replies.jsonl")
+
+    qclean = sub.add_parser("queue-clean", help="Remove invalid/duplicate/already-replied queue items")
+    qclean.add_argument("--keep-duplicates", action="store_true", help="do not remove duplicate target queue entries")
 
     return p
 
@@ -263,6 +267,16 @@ def main() -> None:
         print(f"posted: {result['posted']} | skipped: {result['skipped']}")
         for row in result["results"]:
             print(f"- {row['status']} | {row.get('id', '')} | {row.get('tweet_id', '')}")
+        return
+
+    if args.command == "queue-clean":
+        result = cleanup_queue(remove_duplicates=not args.keep_duplicates)
+        print(
+            f"kept: {result['kept']} | removed: {result['removed']} | "
+            f"invalid: {result['reasons']['invalid']} | "
+            f"already_replied: {result['reasons']['already_replied']} | "
+            f"duplicate_target: {result['reasons']['duplicate_target']}"
+        )
         return
 
 

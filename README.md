@@ -282,6 +282,7 @@ Reply-engine native CLI (fully built workflows):
 python -m src.reply_engine.cli twitter-e2e --handle OpenClawAI --mention-limit 20 --approval-queue --min-confidence 75
 python -m src.reply_engine.cli twitter-discovery --query "openclaw OR \"local ai\" lang:en -is:retweet min_faves:5" --approval-queue --min-score 20 --min-confidence 75
 python -m src.reply_engine.cli queue-list
+python -m src.reply_engine.cli queue-clean
 python -m src.reply_engine.cli queue-approve --ids q_12345678 --dry-run
 ```
 

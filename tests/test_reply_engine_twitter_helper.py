@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,38 +30,6 @@ class _Resp:
 
 
 class VerifyReplyVisibleTests(unittest.TestCase):
-    def test_verify_reply_visible_success(self) -> None:
-        class Client:
-            def get_tweet(self, **kwargs):
-                return _Resp(_Tweet("42"), [_User("42", "OpenClawAI")])
-
-        out = reply_helper.verify_reply_visible(
-            client=Client(),
-            reply_id="999",
-            expected_username="OpenClawAI",
-            attempts=1,
-            delay_seconds=0,
-        )
-        self.assertEqual(out["url"], "https://x.com/OpenClawAI/status/999")
-
-    def test_verify_reply_visible_failure(self) -> None:
-        class Client:
-            def get_tweet(self, **kwargs):
-                raise RuntimeError("not found")
-
-        original_sleep = reply_helper.time.sleep
-        reply_helper.time.sleep = lambda x: None
-        try:
-            with self.assertRaises(RuntimeError):
-                reply_helper.verify_reply_visible(
-                    client=Client(),
-                    reply_id="999",
-                    attempts=2,
-                    delay_seconds=0,
-                )
-        finally:
-            reply_helper.time.sleep = original_sleep
-
     def test_required_env_uses_keyring_access_token_fallback(self) -> None:
         class FakeKeyring:
             def get_password(self, service, username):
@@ -130,10 +99,9 @@ class VerifyReplyVisibleTests(unittest.TestCase):
         original_build_client = reply_helper.build_client
         original_fetch_native = reply_helper.fetch_mentions_native
         original_fetch_fallback = reply_helper.fetch_mentions_search_fallback
-        original_get_auth_user = reply_helper.get_authenticated_username
         original_generate = reply_helper.generate_reply_drafts
         try:
-            reply_helper.build_client = lambda require_write=False: Client()
+            reply_helper.build_client = lambda: Client()
             reply_helper.fetch_mentions_native = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
             reply_helper.fetch_mentions_search_fallback = lambda client, handle, limit: [
                 {
@@ -146,7 +114,6 @@ class VerifyReplyVisibleTests(unittest.TestCase):
                     "url": "https://x.com/alice/status/t1",
                 }
             ]
-            reply_helper.get_authenticated_username = lambda client: "OpenClawAI"
             reply_helper.generate_reply_drafts = lambda author, text, draft_count: ["reply one"]
 
             result = reply_helper.run_mentions_workflow(
@@ -162,7 +129,6 @@ class VerifyReplyVisibleTests(unittest.TestCase):
             reply_helper.build_client = original_build_client
             reply_helper.fetch_mentions_native = original_fetch_native
             reply_helper.fetch_mentions_search_fallback = original_fetch_fallback
-            reply_helper.get_authenticated_username = original_get_auth_user
             reply_helper.generate_reply_drafts = original_generate
 
         self.assertEqual(result["source"], "search_fallback")
@@ -242,11 +208,8 @@ class VerifyReplyVisibleTests(unittest.TestCase):
         original_fetch_discovery = reply_helper.fetch_discovery_search
         original_generate = reply_helper.generate_reply_drafts
         original_has_replied = reply_helper.has_replied_to
-        original_get_auth_user = reply_helper.get_authenticated_username
-        original_post_reply = reply_helper.post_reply
-        original_verify = reply_helper.verify_reply_visible
         try:
-            reply_helper.build_client = lambda require_write=False: Client()
+            reply_helper.build_client = lambda: Client()
             reply_helper.fetch_discovery_search = lambda **kwargs: [
                 {
                     "tweet_id": "123",
@@ -259,11 +222,6 @@ class VerifyReplyVisibleTests(unittest.TestCase):
             ]
             reply_helper.generate_reply_drafts = lambda author, text, draft_count: ["reply one"]
             reply_helper.has_replied_to = lambda tweet_id, account=None: True
-            reply_helper.get_authenticated_username = lambda client: "OpenClawAI"
-            reply_helper.post_reply = lambda client, tweet_id, text: "r1"
-            reply_helper.verify_reply_visible = lambda client, reply_id, expected_username=None, attempts=3, delay_seconds=1.0: {
-                "url": "https://x.com/OpenClawAI/status/r1"
-            }
 
             result = reply_helper.run_discovery_workflow(
                 query="openclaw",
@@ -278,9 +236,6 @@ class VerifyReplyVisibleTests(unittest.TestCase):
             reply_helper.fetch_discovery_search = original_fetch_discovery
             reply_helper.generate_reply_drafts = original_generate
             reply_helper.has_replied_to = original_has_replied
-            reply_helper.get_authenticated_username = original_get_auth_user
-            reply_helper.post_reply = original_post_reply
-            reply_helper.verify_reply_visible = original_verify
 
         self.assertEqual(result["posted_replies"], 0)
         self.assertEqual(result["results"][0]["status"], "skipped_already_replied")
@@ -312,6 +267,43 @@ class VerifyReplyVisibleTests(unittest.TestCase):
             reply_helper.urlrequest.urlopen = original_urlopen
         self.assertEqual(len(rows), 1)
         self.assertIn("Local AI summary", rows[0])
+
+    def test_cleanup_queue_removes_invalid_and_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_config = reply_helper.CONFIG_DIR
+            original_approval = reply_helper.APPROVAL_DIR
+            original_has_replied = reply_helper.has_replied_to
+            try:
+                reply_helper.CONFIG_DIR = Path(td)
+                reply_helper.APPROVAL_DIR = Path(td) / "approval_queue"
+                reply_helper.APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
+                reply_helper.has_replied_to = lambda tweet_id, account=None: str(tweet_id) == "333"
+                (reply_helper.APPROVAL_DIR / "q_a.json").write_text(
+                    json.dumps({"id": "a", "tweet_id": "111", "text": "one"}),
+                    encoding="utf-8",
+                )
+                (reply_helper.APPROVAL_DIR / "q_b.json").write_text(
+                    json.dumps({"id": "b", "tweet_id": "111", "text": "dup"}),
+                    encoding="utf-8",
+                )
+                (reply_helper.APPROVAL_DIR / "q_c.json").write_text(
+                    json.dumps({"id": "c", "tweet_id": "333", "text": "already replied"}),
+                    encoding="utf-8",
+                )
+                (reply_helper.APPROVAL_DIR / "q_d.json").write_text(
+                    json.dumps({"id": "d", "tweet_id": "", "text": ""}),
+                    encoding="utf-8",
+                )
+                result = reply_helper.cleanup_queue(remove_duplicates=True)
+            finally:
+                reply_helper.CONFIG_DIR = original_config
+                reply_helper.APPROVAL_DIR = original_approval
+                reply_helper.has_replied_to = original_has_replied
+
+        self.assertEqual(result["kept"], 1)
+        self.assertEqual(result["removed"], 3)
+        self.assertEqual(result["reasons"]["duplicate_target"], 1)
+        self.assertEqual(result["reasons"]["already_replied"], 1)
 
 
 if __name__ == "__main__":
