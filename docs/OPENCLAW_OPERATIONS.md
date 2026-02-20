@@ -61,8 +61,8 @@ All commands exposed by `python src/twitter_helper.py`:
 | Reply discovery | `python src/twitter_helper.py reply-discover ...` | internet only | `data/discovered.json` |
 | Reply ranking | `python src/twitter_helper.py reply-rank ...` | none | `data/ranked.json` |
 | Reply ideas markdown | `python src/twitter_helper.py reply-ideas ...` | optional OpenAI key | `data/reply_ideas.md` |
-| Reply single target (draft/post) | `python src/twitter_helper.py reply-twitter-helper ...` | Bearer + OAuth1 keys for post | drafts + optional posted reply |
-| Mentions workflow (draft/post) | `python src/twitter_helper.py reply-twitter-e2e ...` | Bearer + OAuth1 keys for post | `data/mentions_report.json` + optional posts |
+| Reply single target (draft/post) | `python src/twitter_helper.py reply-twitter-helper ...` | Bearer for read + OAuth2 helper tokens for post | drafts + optional posted reply |
+| Mentions workflow (draft/post) | `python src/twitter_helper.py reply-twitter-e2e ...` | Bearer for read + OAuth2 helper tokens for post | `data/mentions_report.json` + optional posts |
 | Proactive discover+reply | `python src/twitter_helper.py reply-discover-run ...` | Bearer, optional OAuth2 post token | drafts or auto-replies + JSON report |
 | Approval queue review/post | `python src/twitter_helper.py reply-approve --list` / `--approve q_xxx` | OAuth2 tokens for final post | queued replies listed or posted |
 
@@ -82,13 +82,6 @@ OAuth2 access/refresh tokens are stored in OS keyring when available (account na
 Recommended for browsing/reply scanning:
 
 - `TWITTER_BEARER_TOKEN`
-
-Required for reply-engine post via tweepy:
-
-- `TWITTER_API_KEY`
-- `TWITTER_API_SECRET`
-- `TWITTER_ACCESS_TOKEN`
-- `TWITTER_ACCESS_SECRET`
 
 Optional for LLM draft generation:
 
@@ -222,6 +215,6 @@ Non-interactive auth repair failure:
 
 - Run `auth-login` once in interactive terminal
 
-Missing tweepy for reply engine:
+Missing reply engine dependencies:
 
 - `pip install -r requirements-reply-engine.txt`

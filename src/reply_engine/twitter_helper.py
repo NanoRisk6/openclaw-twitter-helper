@@ -156,13 +156,6 @@ def build_client(require_write: bool = True) -> Any:
 
     env = _required_env()
     required = ["TWITTER_BEARER_TOKEN"]
-    if require_write:
-        required.extend([
-            "TWITTER_API_KEY",
-            "TWITTER_API_SECRET",
-            "TWITTER_ACCESS_TOKEN",
-            "TWITTER_ACCESS_SECRET",
-        ])
     missing = [k for k in required if not env.get(k)]
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
@@ -175,6 +168,43 @@ def build_client(require_write: bool = True) -> Any:
         access_token_secret=env["TWITTER_ACCESS_SECRET"],
         wait_on_rate_limit=True,
     )
+
+
+def _load_main_helper():
+    try:
+        import twitter_helper as main_helper  # installed script/module path
+        return main_helper
+    except Exception:
+        pass
+    try:
+        from src import twitter_helper as main_helper  # repo-local module path
+        return main_helper
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not import shared twitter_helper module for OAuth2 posting path."
+        ) from exc
+
+
+def _post_reply_via_shared_oauth2(tweet_id: str, text: str) -> Dict[str, str]:
+    main_helper = _load_main_helper()
+    env_path = Path(os.getenv("TWITTER_HELPER_ENV_FILE", ".env"))
+    cfg, env_values = main_helper.resolve_config(env_path)
+    fresh, (status, body) = main_helper.post_with_retry(
+        cfg=cfg,
+        env_path=env_path,
+        env_values=env_values,
+        text=text,
+        reply_to_id=tweet_id,
+        unique_on_duplicate=True,
+    )
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"OAuth2 post failed ({status}): {json.dumps(body, ensure_ascii=False)}")
+    data = body.get("data") if isinstance(body, dict) else None
+    reply_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+    if not reply_id:
+        raise RuntimeError("OAuth2 post succeeded but returned no reply id")
+    _, url = main_helper.verify_post_visible(fresh, reply_id)
+    return {"reply_id": reply_id, "reply_url": url}
 
 
 def fetch_tweet_context(client: Any, tweet_id: str) -> Dict[str, Any]:
@@ -770,7 +800,7 @@ def run_twitter_helper(
     log_path: str = "data/replies.jsonl",
 ) -> Dict[str, Any]:
     tweet_id = extract_tweet_id(tweet)
-    client = build_client(require_write=not dry_run)
+    client = build_client(require_write=False)
     ctx = fetch_tweet_context(client=client, tweet_id=tweet_id)
 
     drafts = generate_reply_drafts(
@@ -800,14 +830,9 @@ def run_twitter_helper(
         result["status"] = "skipped_already_replied"
         return result
 
-    auth_username = get_authenticated_username(client)
-    reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
-    verify = verify_reply_visible(
-        client=client,
-        reply_id=reply_id,
-        expected_username=auth_username,
-    )
-    reply_url = verify["url"]
+    posted = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=chosen)
+    reply_id = posted["reply_id"]
+    reply_url = posted["reply_url"]
 
     row = {
         "tweet_id": tweet_id,
@@ -844,7 +869,7 @@ def run_mentions_workflow(
     log_file = Path(log_path)
     report_file = Path(report_path)
 
-    client = build_client(require_write=post)
+    client = build_client(require_write=False)
     effective_since_id = since_id or load_last_mention_id()
     source = "native_mentions"
     try:
@@ -857,7 +882,6 @@ def run_mentions_workflow(
     except Exception:
         source = "search_fallback"
         mentions = fetch_mentions_search_fallback(client=client, handle=handle, limit=mention_limit)
-    auth_username = get_authenticated_username(client) or handle.lstrip("@")
     logged_ids = _load_logged_tweet_ids(log_file)
 
     results: List[Dict[str, Any]] = []
@@ -930,13 +954,9 @@ def run_mentions_workflow(
             row["queue_id"] = f"q_{qid}"
             queued += 1
         elif post and posted < max_posts:
-            reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
-            verify = verify_reply_visible(
-                client=client,
-                reply_id=reply_id,
-                expected_username=auth_username,
-            )
-            reply_url = verify["url"]
+            posted_reply = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=chosen)
+            reply_id = posted_reply["reply_id"]
+            reply_url = posted_reply["reply_url"]
             row["status"] = "posted"
             row["reply_id"] = reply_id
             row["reply_url"] = reply_url
@@ -1006,11 +1026,10 @@ def run_discovery_workflow(
 ) -> Dict[str, Any]:
     log_file = Path(log_path)
     report_file = Path(report_path)
-    client = build_client(require_write=post)
+    client = build_client(require_write=False)
     rows = fetch_discovery_search(client=client, query=query, limit=limit, since_id=since_id)
     logged_ids = _load_logged_tweet_ids(log_file)
     queued_ids = approval_queue_target_ids()
-    auth_username = get_authenticated_username(client)
     posted = 0
     queued = 0
     results: List[Dict[str, Any]] = []
@@ -1098,13 +1117,9 @@ def run_discovery_workflow(
             continue
 
         if post and posted < max_posts:
-            reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
-            verify = verify_reply_visible(
-                client=client,
-                reply_id=reply_id,
-                expected_username=auth_username,
-            )
-            reply_url = verify["url"]
+            posted_reply = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=chosen)
+            reply_id = posted_reply["reply_id"]
+            reply_url = posted_reply["reply_url"]
             row["status"] = "posted"
             row["reply_id"] = reply_id
             row["reply_url"] = reply_url
@@ -1166,8 +1181,6 @@ def approve_queue(
             selected.add(x)
 
     queue = list_approval_queue()
-    client: Optional[Any] = None
-    auth_username: Optional[str] = None
     posted = 0
     skipped = 0
     out_rows: List[Dict[str, Any]] = []
@@ -1202,12 +1215,9 @@ def approve_queue(
             skipped += 1
             out_rows.append(res)
             continue
-        if client is None:
-            client = build_client(require_write=True)
-            auth_username = get_authenticated_username(client)
-        reply_id = post_reply(client=client, tweet_id=tweet_id, text=text)
-        verify = verify_reply_visible(client=client, reply_id=reply_id, expected_username=auth_username)
-        reply_url = verify["url"]
+        posted_reply = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=text)
+        reply_id = posted_reply["reply_id"]
+        reply_url = posted_reply["reply_url"]
         log_reply(
             log_file,
             {
