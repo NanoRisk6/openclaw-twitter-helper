@@ -7,6 +7,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from urllib import error as urlerror
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 try:
     from dotenv import load_dotenv
@@ -33,6 +36,39 @@ DEFAULT_REPLY_MODES = [
     "supportive",
     "question",
 ]
+WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_'-]{2,}")
+STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "and",
+    "been",
+    "being",
+    "both",
+    "from",
+    "have",
+    "into",
+    "just",
+    "like",
+    "more",
+    "most",
+    "only",
+    "over",
+    "really",
+    "some",
+    "than",
+    "that",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "with",
+    "your",
+}
 
 
 def extract_tweet_id(tweet: str) -> str:
@@ -265,6 +301,72 @@ def _fallback_mode_drafts(author: str, text: str, modes: List[str]) -> Dict[str,
         else:
             out[mode] = f"@{author} Strong point on \"{focus}\". Curious where you’d take this next?"
     return out
+
+
+def _extract_web_terms(text: str, limit: int = 6) -> List[str]:
+    terms: List[str] = []
+    seen: Set[str] = set()
+    for tok in WORD_RE.findall(text):
+        low = tok.lower()
+        if low in STOPWORDS or low in seen:
+            continue
+        seen.add(low)
+        terms.append(low)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+def _safe_get_json(url: str, timeout: float = 6.0) -> Optional[Dict[str, Any]]:
+    try:
+        with urlrequest.urlopen(url, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+    except (urlerror.URLError, TimeoutError, ValueError):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def fetch_web_context(query_text: str, max_items: int = 3) -> List[str]:
+    terms = _extract_web_terms(query_text, limit=max(2, max_items + 2))
+    snippets: List[str] = []
+    for term in terms:
+        if len(snippets) >= max_items:
+            break
+        ddg_url = (
+            "https://api.duckduckgo.com/?"
+            + urlparse.urlencode(
+                {
+                    "q": term,
+                    "format": "json",
+                    "no_html": "1",
+                    "skip_disambig": "1",
+                }
+            )
+        )
+        payload = _safe_get_json(ddg_url)
+        if not payload:
+            continue
+        abstract = str(payload.get("AbstractText", "")).strip()
+        if abstract:
+            snippets.append(f"{term}: {abstract}")
+            continue
+        related = payload.get("RelatedTopics")
+        if isinstance(related, list):
+            for row in related:
+                if isinstance(row, dict) and isinstance(row.get("Text"), str):
+                    txt = row["Text"].strip()
+                    if txt:
+                        snippets.append(f"{term}: {txt}")
+                        break
+            if len(snippets) >= max_items:
+                break
+    return snippets[:max_items]
 
 
 def generate_reply_many_ways(author: str, text: str, modes: List[str]) -> Dict[str, str]:
@@ -734,6 +836,8 @@ def run_mentions_workflow(
     max_posts: int = 3,
     approval_queue: bool = False,
     min_confidence: int = 70,
+    web_enrich: bool = False,
+    web_context_items: int = 2,
     log_path: str = "data/replies.jsonl",
     report_path: str = "data/mentions_report.json",
 ) -> Dict[str, Any]:
@@ -769,9 +873,17 @@ def run_mentions_workflow(
             context_text = "\n".join(context_lines[-5:]).strip()
         except Exception:
             context_text = ""
+        web_context: List[str] = []
+        if web_enrich:
+            web_context = fetch_web_context(item["text"], max_items=max(1, web_context_items))
+        enriched_text = item["text"]
+        if context_text:
+            enriched_text += f"\n\nThread context:\n{context_text}"
+        if web_context:
+            enriched_text += "\n\nWeb context:\n" + "\n".join(f"- {x}" for x in web_context)
         drafts = generate_reply_drafts(
             author=item["author"],
-            text=f"{item['text']}\n\nThread context:\n{context_text}" if context_text else item["text"],
+            text=enriched_text,
             draft_count=max(1, draft_count),
         )
         chosen_idx = min(pick_idx, len(drafts) - 1)
@@ -783,6 +895,7 @@ def run_mentions_workflow(
             "author": item["author"],
             "tweet_text": item["text"],
             "thread_context": context_text,
+            "web_context": web_context,
             "drafts": drafts,
             "picked_index": chosen_idx + 1,
             "picked_text": chosen,
@@ -860,6 +973,8 @@ def run_mentions_workflow(
         "pick": pick,
         "post": post,
         "max_posts": max_posts,
+        "web_enrich": web_enrich,
+        "web_context_items": web_context_items,
         "fetched_mentions": len(mentions),
         "posted_replies": posted,
         "queued_replies": queued,
@@ -884,6 +999,8 @@ def run_discovery_workflow(
     min_score: int = 20,
     min_confidence: int = 70,
     max_posts: int = 3,
+    web_enrich: bool = False,
+    web_context_items: int = 2,
     log_path: str = "data/replies.jsonl",
     report_path: str = "data/discovery_report.json",
 ) -> Dict[str, Any]:
@@ -930,9 +1047,17 @@ def run_discovery_workflow(
         context = get_full_conversation(client=client, tweet_id=tweet_id)
         context_lines = [x.get("text", "").strip() for x in context.get("parents", []) if x.get("text")]
         context_text = "\n".join(context_lines[-5:]).strip()
+        web_context: List[str] = []
+        if web_enrich:
+            web_context = fetch_web_context(item["text"], max_items=max(1, web_context_items))
+        enriched_text = item["text"]
+        if context_text:
+            enriched_text += f"\n\nThread context:\n{context_text}"
+        if web_context:
+            enriched_text += "\n\nWeb context:\n" + "\n".join(f"- {x}" for x in web_context)
         drafts = generate_reply_drafts(
             author=item["author"],
-            text=f"{item['text']}\n\nThread context:\n{context_text}" if context_text else item["text"],
+            text=enriched_text,
             draft_count=max(1, draft_count),
         )
         chosen_idx = min(pick_idx, len(drafts) - 1)
@@ -942,6 +1067,8 @@ def run_discovery_workflow(
         row["picked_index"] = chosen_idx + 1
         row["picked_text"] = chosen
         row["confidence"] = confidence
+        row["thread_context"] = context_text
+        row["web_context"] = web_context
 
         if confidence < min_confidence:
             row["status"] = "skipped_low_confidence"
@@ -1009,6 +1136,8 @@ def run_discovery_workflow(
         "min_score": min_score,
         "min_confidence": min_confidence,
         "max_posts": max_posts,
+        "web_enrich": web_enrich,
+        "web_context_items": web_context_items,
         "fetched_tweets": len(rows),
         "posted_replies": posted,
         "queued_replies": queued,

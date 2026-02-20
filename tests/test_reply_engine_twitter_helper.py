@@ -295,6 +295,24 @@ class VerifyReplyVisibleTests(unittest.TestCase):
         self.assertEqual(set(result.keys()), set(modes))
         self.assertIn("@alice", result["direct"])
 
+    def test_fetch_web_context_parses_abstract(self) -> None:
+        class _Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return None
+            def read(self):
+                return b'{"AbstractText":"Local AI summary.","RelatedTopics":[]}'
+
+        original_urlopen = reply_helper.urlrequest.urlopen
+        try:
+            reply_helper.urlrequest.urlopen = lambda url, timeout=6.0: _Resp()
+            rows = reply_helper.fetch_web_context("local ai agents", max_items=1)
+        finally:
+            reply_helper.urlrequest.urlopen = original_urlopen
+        self.assertEqual(len(rows), 1)
+        self.assertIn("Local AI summary", rows[0])
+
 
 if __name__ == "__main__":
     unittest.main()

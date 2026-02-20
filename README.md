@@ -61,6 +61,7 @@ Dedicated reply engine tool:
 ./reply-engine -h
 ./reply-engine twitter-discovery --query "openclaw OR \"local ai\" lang:en -is:retweet min_faves:5" --approval-queue
 ./reply-engine many-ways --tweet "https://x.com/OpenClawAI/status/2024820748980748765"
+./reply-engine twitter-discovery --query "openclaw OR local ai" --web-enrich --web-context-items 3 --approval-queue
 ```
 
 ## Open Claw Docs

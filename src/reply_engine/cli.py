@@ -81,6 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
     e2e.add_argument("--max-posts", type=int, default=3, help="max replies to post in one run")
     e2e.add_argument("--approval-queue", action="store_true", help="queue qualified replies instead of posting")
     e2e.add_argument("--min-confidence", type=int, default=70, help="minimum confidence to queue/post")
+    e2e.add_argument("--web-enrich", action="store_true", help="enrich draft context with lightweight web snippets")
+    e2e.add_argument("--web-context-items", type=int, default=2, help="max web snippets per candidate")
     e2e.add_argument("--log-path", default="data/replies.jsonl")
     e2e.add_argument("--report-path", default="data/mentions_report.json")
 
@@ -95,6 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     d2e.add_argument("--min-score", type=int, default=20)
     d2e.add_argument("--min-confidence", type=int, default=70)
     d2e.add_argument("--max-posts", type=int, default=3)
+    d2e.add_argument("--web-enrich", action="store_true", help="enrich draft context with lightweight web snippets")
+    d2e.add_argument("--web-context-items", type=int, default=2, help="max web snippets per candidate")
     d2e.add_argument("--log-path", default="data/replies.jsonl")
     d2e.add_argument("--report-path", default="data/discovery_report.json")
 
@@ -193,6 +197,8 @@ def main() -> None:
             max_posts=args.max_posts,
             approval_queue=args.approval_queue,
             min_confidence=args.min_confidence,
+            web_enrich=args.web_enrich,
+            web_context_items=args.web_context_items,
             log_path=args.log_path,
             report_path=args.report_path,
         )
@@ -218,6 +224,8 @@ def main() -> None:
             min_score=args.min_score,
             min_confidence=args.min_confidence,
             max_posts=args.max_posts,
+            web_enrich=args.web_enrich,
+            web_context_items=args.web_context_items,
             log_path=args.log_path,
             report_path=args.report_path,
         )
