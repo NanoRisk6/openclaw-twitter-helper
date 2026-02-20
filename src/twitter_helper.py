@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 from datetime import datetime, timezone
@@ -21,6 +22,9 @@ AUTH_URL = "https://twitter.com/i/oauth2/authorize"
 MAX_TWEET_LEN = 280
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access"
+OPENCLAW_SUFFIX_RE = re.compile(
+    r"\s*\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]\s*$", re.IGNORECASE
+)
 
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
@@ -188,9 +192,19 @@ def me(cfg: Config) -> Tuple[int, Dict[str, object]]:
 
 
 def post_tweet(
-    cfg: Config, text: str, reply_to_id: Optional[str] = None
+    cfg: Config,
+    text: str,
+    reply_to_id: Optional[str] = None,
+    run_tag: Optional[str] = None,
 ) -> Tuple[int, Dict[str, object]]:
-    payload: Dict[str, object] = {"text": text}
+    sanitized_text = sanitize_public_text(text)
+    if not sanitized_text:
+        raise TwitterHelperError("Tweet text is empty after sanitization.")
+
+    active_run_tag = run_tag or unique_marker("openclaw")
+    print(f'[{active_run_tag}] posting: "{sanitized_text}"')
+
+    payload: Dict[str, object] = {"text": sanitized_text}
     if reply_to_id:
         payload["reply"] = {"in_reply_to_tweet_id": reply_to_id}
 
@@ -216,28 +230,14 @@ def validate_tweet_len(text: str) -> None:
         raise TwitterHelperError(f"Tweet is {len(text)} chars (max {MAX_TWEET_LEN}).")
 
 
+def sanitize_public_text(text: str) -> str:
+    return OPENCLAW_SUFFIX_RE.sub("", text).strip()
+
+
 def unique_marker(prefix: str = "openclaw") -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     token = secrets.token_hex(2)
     return f"{prefix}-{stamp}-{token}"
-
-
-def make_unique_tweet_text(base_text: str, prefix: str = "openclaw") -> str:
-    base = base_text.strip()
-    if not base:
-        raise TwitterHelperError("No tweet text provided.")
-
-    suffix = f" [{unique_marker(prefix)}]"
-    allowed = MAX_TWEET_LEN - len(suffix)
-    if allowed < 1:
-        raise TwitterHelperError("Unique suffix leaves no room for tweet text.")
-
-    if len(base) > allowed:
-        if allowed <= 3:
-            base = base[:allowed]
-        else:
-            base = base[: allowed - 3].rstrip() + "..."
-    return base + suffix
 
 
 def ensure_auth(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> Config:
@@ -563,11 +563,12 @@ def post_with_retry(
     text: str,
     reply_to_id: Optional[str] = None,
 ) -> Tuple[Config, Tuple[int, Dict[str, object]]]:
+    run_tag = unique_marker("openclaw")
     fresh = ensure_auth(cfg, env_path, env_values)
-    status, body = post_tweet(fresh, text, reply_to_id=reply_to_id)
+    status, body = post_tweet(fresh, text, reply_to_id=reply_to_id, run_tag=run_tag)
     if status in (401, 403):
         fresh = refresh_tokens(fresh, env_path, env_values)
-        status, body = post_tweet(fresh, text, reply_to_id=reply_to_id)
+        status, body = post_tweet(fresh, text, reply_to_id=reply_to_id, run_tag=run_tag)
     return fresh, (status, body)
 
 
@@ -586,7 +587,7 @@ def cmd_openclaw_autopost(
     cfg: Config, env_path: Path, env_values: Dict[str, str], args: argparse.Namespace
 ) -> int:
     base_text = read_text_from_args(args)
-    text = make_unique_tweet_text(base_text, prefix="openclaw")
+    text = sanitize_public_text(base_text)
     validate_tweet_len(text)
 
     if args.dry_run:
@@ -705,7 +706,7 @@ def cmd_auth_login(env_path: Path, args: argparse.Namespace) -> int:
     )
     env_values = load_env_file(env_path)
     auto_args = argparse.Namespace(text=auto_text, file=None, dry_run=False)
-    print("Auto-post requested. Posting a unique confirmation tweet...")
+    print("Auto-post requested. Posting confirmation tweet...")
     return cmd_openclaw_autopost(cfg, env_path, env_values, auto_args)
 
 
@@ -779,8 +780,7 @@ def cmd_post(
     cfg: Config, env_path: Path, env_values: Dict[str, str], args: argparse.Namespace
 ) -> int:
     text = read_text_from_args(args)
-    if args.unique:
-        text = make_unique_tweet_text(text, prefix="manual")
+    text = sanitize_public_text(text)
 
     validate_tweet_len(text)
     print(f"Posting tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
@@ -871,11 +871,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_auth.add_argument(
         "--auto-post",
         action="store_true",
-        help="After successful login+doctor, post a unique confirmation tweet",
+        help="After successful login+doctor, post a confirmation tweet",
     )
     p_auth.add_argument(
         "--auto-post-text",
-        help="Base text to use for --auto-post (unique suffix added automatically)",
+        help="Text to use for --auto-post",
     )
 
     sub.add_parser("doctor", help="Run guided diagnostics for config + auth")
@@ -887,15 +887,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_post = sub.add_parser("post", help="Post a single tweet")
     p_post.add_argument("--text", help="Tweet text")
     p_post.add_argument("--file", help="Path to text file")
-    p_post.add_argument(
-        "--unique",
-        action="store_true",
-        help="Append a unique marker to avoid duplicate-text rejection",
-    )
 
     p_oc_auto = sub.add_parser(
         "openclaw-autopost",
-        help="Open Claw integration post (always appends unique marker)",
+        help="Open Claw integration post",
     )
     p_oc_auto.add_argument("--text", help="Base tweet text")
     p_oc_auto.add_argument("--file", help="Path to base text file")

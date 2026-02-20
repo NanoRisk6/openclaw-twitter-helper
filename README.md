@@ -89,7 +89,6 @@ Post one tweet:
 ```bash
 python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py post --text "hello from Open Claw"
 ```
-Add `--unique` to append a unique marker and avoid duplicate-text rejection.
 
 Post a thread (`---` between tweets):
 
@@ -97,13 +96,13 @@ Post a thread (`---` between tweets):
 python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py thread --file /Users/matthew/openclaw-twitter-helper/examples/thread.txt
 ```
 
-Open Claw integration post (always unique):
+Open Claw integration post:
 
 ```bash
 python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py openclaw-autopost --text "Open Claw status update"
 ```
 
-Preview unique output without posting:
+Preview final output without posting:
 
 ```bash
 python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py openclaw-autopost --text "Open Claw status update" --dry-run
