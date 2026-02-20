@@ -27,6 +27,7 @@ reply_engine = [
 
 [project.scripts]
 twitter-helper = "twitter_helper:main"
+reply-engine = "reply_engine.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

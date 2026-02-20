@@ -9,6 +9,7 @@ requires:
   binaries:
     - python3
     - run-twitter-helper
+    - reply-engine
   env: []
 homepage: https://github.com/NanoRisk6/openclaw-twitter-helper
 ---

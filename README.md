@@ -55,6 +55,13 @@ $HELPER_DIR/run-twitter-helper diagnose
 $HELPER_DIR/run-twitter-helper openclaw-autopost --text "Open Claw is online"
 ```
 
+Dedicated reply engine tool:
+
+```bash
+./reply-engine -h
+./reply-engine twitter-discovery --query "openclaw OR \"local ai\" lang:en -is:retweet min_faves:5" --approval-queue
+```
+
 ## Open Claw Docs
 
 - Operations guide: `docs/OPENCLAW_OPERATIONS.md`

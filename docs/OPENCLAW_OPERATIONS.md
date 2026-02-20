@@ -32,6 +32,7 @@ All commands exposed by `python src/twitter_helper.py`:
 - `reply-approve`: review and approve queued replies for posting
 - `reply-twitter-helper`: draft/post to one specific tweet target
 - `reply-twitter-e2e`: mentions workflow with optional posting cap
+- `reply-engine`: dedicated tool wrapper for `src.reply_engine.cli`
 
 ## Capability Map
 
@@ -110,6 +111,7 @@ From repo root:
 - `./run-twitter-helper --account default diagnose`
 - `./run-twitter-helper --account default reply-discover-run --watchlist default --approval-queue --max-tweets 8`
 - `./run-twitter-helper --account default reply-approve --list`
+- `./reply-engine twitter-discovery --query "openclaw OR local ai lang:en -is:retweet min_faves:5" --approval-queue`
 
 Wrapper passes through all subcommands and has aliases:
 
