@@ -104,10 +104,11 @@ Post single tweet:
 python src/twitter_helper.py post --text "hello from Open Claw"
 ```
 
-Post with media (image path or URL):
+Post with media (comma-separated image paths/URLs, max 5):
 
 ```bash
 python src/twitter_helper.py post --text "OpenClaw update with chart 🦞" --media ./examples/chart.png --alt-text "Performance chart"
+python src/twitter_helper.py post --text "OpenClaw update with charts 🦞" --media ./examples/chart.png,https://picsum.photos/800/600 --alt-text "Chart one,Chart two"
 python src/twitter_helper.py post --text "OpenClaw update with chart 🦞" --media https://picsum.photos/800/600 --dry-run
 ```
 
@@ -210,6 +211,9 @@ Proactive reply discovery run:
 ```bash
 python src/twitter_helper.py reply-discover-run --watchlist default --max-tweets 15 --min-score 25 --dry-run
 python src/twitter_helper.py reply-discover-run --query "openclaw lang:en min_faves:10" --auto-post --min-confidence 80
+python src/twitter_helper.py reply-discover-run --watchlist default --approval-queue --max-tweets 8 --min-score 25
+python src/twitter_helper.py reply-approve --list
+python src/twitter_helper.py reply-approve --approve q_ab12cd34 q_ef56gh78
 ```
 
 ## Integrated Reply Engine

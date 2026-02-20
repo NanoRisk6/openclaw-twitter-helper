@@ -29,6 +29,7 @@ All commands exposed by `python src/twitter_helper.py`:
 - `reply-ideas`: turn ranked candidates into drafted replies
 - `reply-run`: end-to-end discover/rank/ideas pipeline
 - `reply-discover-run`: proactive discover + draft/auto-reply pipeline
+- `reply-approve`: review and approve queued replies for posting
 - `reply-twitter-helper`: draft/post to one specific tweet target
 - `reply-twitter-e2e`: mentions workflow with optional posting cap
 
@@ -48,7 +49,7 @@ All commands exposed by `python src/twitter_helper.py`:
 | One-command post flow | `python src/twitter_helper.py run-twitter-helper --text "..."` | OAuth2 tokens | one unique tweet posted |
 | Restart recovery (no post) | `python src/twitter_helper.py restart-setup` | OAuth2/browser if needed | repaired auth/setup |
 | Post single tweet | `python src/twitter_helper.py post --text "..."` | OAuth2 tokens | tweet posted |
-| Post with media | `python src/twitter_helper.py post --text "..." --media <path-or-url>` | OAuth2 tokens + `media.write` scope | tweet + image posted |
+| Post with media | `python src/twitter_helper.py post --text "..." --media <path-or-url[,path-or-url...]>` | OAuth2 tokens + `media.write` scope | tweet + 1-5 images posted |
 | Reply to tweet | `python src/twitter_helper.py post --text "..." --in-reply-to <ID>` | OAuth2 tokens + visible target | reply posted |
 | Thread post | `python src/twitter_helper.py thread --file examples/thread.txt` | OAuth2 tokens | thread posted |
 | Open Claw autopost | `python src/twitter_helper.py openclaw-autopost --text "..."` | OAuth2 tokens | tweet posted |
@@ -62,6 +63,7 @@ All commands exposed by `python src/twitter_helper.py`:
 | Reply single target (draft/post) | `python src/twitter_helper.py reply-twitter-helper ...` | Bearer + OAuth1 keys for post | drafts + optional posted reply |
 | Mentions workflow (draft/post) | `python src/twitter_helper.py reply-twitter-e2e ...` | Bearer + OAuth1 keys for post | `data/mentions_report.json` + optional posts |
 | Proactive discover+reply | `python src/twitter_helper.py reply-discover-run ...` | Bearer, optional OAuth2 post token | drafts or auto-replies + JSON report |
+| Approval queue review/post | `python src/twitter_helper.py reply-approve --list` / `--approve q_xxx` | OAuth2 tokens for final post | queued replies listed or posted |
 
 ## Required Environment Variables
 
@@ -106,6 +108,8 @@ From repo root:
 - `./run-twitter-helper browse-twitter --mode search --query "openclaw" --limit 20`
 - `./run-twitter-helper inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json`
 - `./run-twitter-helper --account default diagnose`
+- `./run-twitter-helper --account default reply-discover-run --watchlist default --approval-queue --max-tweets 8`
+- `./run-twitter-helper --account default reply-approve --list`
 
 Wrapper passes through all subcommands and has aliases:
 
@@ -126,6 +130,8 @@ Use these direct intents from Open Claw:
 - "Find inspiration from recent posts" -> `python src/twitter_helper.py inspire-tweets --topic "OpenClaw" --draft-count 5`
 - "Run mentions reply workflow draft-only" -> `python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1`
 - "Run mentions reply workflow and post one" -> `python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1 --post --max-posts 1`
+- "Queue proactive replies for manual review" -> `python src/twitter_helper.py reply-discover-run --watchlist default --approval-queue --max-tweets 8`
+- "Approve queued replies" -> `python src/twitter_helper.py reply-approve --approve q_ab12cd34`
 
 ## OpenClaw `system.run` Examples
 
@@ -138,6 +144,8 @@ Use absolute skill path for reliable execution:
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default browse-twitter --handle OpenClawAI --limit 10 --json"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default mentions --limit 20 --json"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-discover-run --watchlist default --approval-queue --max-tweets 8"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-approve --list"`
 
 ## Recommended Workflows
 

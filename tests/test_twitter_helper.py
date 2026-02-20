@@ -531,6 +531,7 @@ class PostSanitizeTests(unittest.TestCase):
                     "min_score": 1,
                     "min_confidence": 75,
                     "auto_post": False,
+                    "approval_queue": False,
                     "dry_run": True,
                     "output": None,
                     "preview": 5,
@@ -614,7 +615,9 @@ class PostSanitizeTests(unittest.TestCase):
         original_post_with_retry = twitter_helper.post_with_retry
         original_verify_post_visible = twitter_helper.verify_post_visible
         twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
-        twitter_helper.upload_media = lambda access_token, media_input, alt_text=None: "media123"
+        twitter_helper.upload_media = (
+            lambda access_token, media_inputs=None, alt_texts=None: ["media123"]
+        )
         twitter_helper.post_with_retry = fake_post_with_retry
         twitter_helper.verify_post_visible = lambda cfg, tweet_id, attempts=3, delay_seconds=1.0: (
             "",
@@ -630,6 +633,46 @@ class PostSanitizeTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(captured["media_ids"], ["media123"])
+
+    def test_upload_media_rejects_more_than_max_images(self) -> None:
+        with self.assertRaises(twitter_helper.TwitterHelperError):
+            twitter_helper.upload_media("token", ["a.png"] * (twitter_helper.MAX_IMAGES + 1))
+
+    def test_upload_media_rejects_missing_file(self) -> None:
+        with self.assertRaises(twitter_helper.TwitterHelperError):
+            twitter_helper.upload_media("token", ["/tmp/definitely-missing-openclaw-image.png"])
+
+    def test_reply_approve_list_and_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_dir = twitter_helper.APPROVAL_DIR
+            twitter_helper.APPROVAL_DIR = Path(td)
+            try:
+                qid = twitter_helper.save_for_approval(
+                    {
+                        "text": "Queued draft",
+                        "in_reply_to": "12345",
+                        "confidence": 80,
+                    }
+                )
+
+                list_args = type("Args", (), {"list": True, "approve": None, "dry_run": False, "json": True})()
+                list_output = io.StringIO()
+                with contextlib.redirect_stdout(list_output):
+                    rc_list = twitter_helper.cmd_reply_approve(Path(td) / ".env", list_args)
+
+                approve_args = type(
+                    "Args", (), {"list": False, "approve": [f"q_{qid}"], "dry_run": True, "json": False}
+                )()
+                approve_output = io.StringIO()
+                with contextlib.redirect_stdout(approve_output):
+                    rc_approve = twitter_helper.cmd_reply_approve(Path(td) / ".env", approve_args)
+            finally:
+                twitter_helper.APPROVAL_DIR = original_dir
+
+        self.assertEqual(rc_list, 0)
+        self.assertIn('"count": 1', list_output.getvalue())
+        self.assertEqual(rc_approve, 0)
+        self.assertIn(f"dry-run approve q_{qid}", approve_output.getvalue())
 
 
 if __name__ == "__main__":

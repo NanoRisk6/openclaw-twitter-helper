@@ -12,6 +12,7 @@ import secrets
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from email.message import Message
 import urllib.error
@@ -41,6 +42,11 @@ TOKEN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 TOKENS_JSON_FALLBACK = TOKEN_CONFIG_DIR / "tokens.json"
 ACTIVE_ACCOUNT = "default"
 USER_ID_CACHE_TTL_SECONDS = 86400
+APPROVAL_DIR = TOKEN_CONFIG_DIR / "approval_queue"
+APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
+ALLOWED_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_SIZE_MB = 5
+MAX_IMAGES = 5
 
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
@@ -551,77 +557,109 @@ def verify_post_visible(
 
 def upload_media(
     access_token: str,
-    media_input: str,
-    alt_text: Optional[str] = None,
-) -> str:
+    media_inputs: Optional[List[str]] = None,
+    alt_texts: Optional[List[str]] = None,
+) -> List[str]:
     if requests is None:
         raise TwitterHelperError("Missing dependency `requests`. Install with `pip install -r requirements.txt`.")
     if not access_token:
         raise TwitterHelperError("No OAuth2 access token found for media upload.")
-    if not media_input:
-        raise TwitterHelperError("Media input is empty.")
+    if not media_inputs:
+        return []
+    if len(media_inputs) > MAX_IMAGES:
+        raise TwitterHelperError(f"Max {MAX_IMAGES} images are allowed per tweet.")
 
-    temp_path: Optional[Path] = None
-    source_path: Path
+    alt_texts = alt_texts or [None] * len(media_inputs)
+    media_ids: List[str] = []
 
-    if media_input.startswith(("http://", "https://")):
-        print(f"Downloading media from URL: {media_input}")
-        suffix = Path(urllib.parse.urlparse(media_input).path).suffix or ".jpg"
-        with urllib.request.urlopen(media_input, timeout=30) as resp:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(resp.read())
-                source_path = Path(tmp.name)
-                temp_path = source_path
-    else:
-        source_path = Path(media_input).expanduser()
-        if not source_path.exists():
-            raise TwitterHelperError(f"Media file not found: {source_path}")
-        if not source_path.is_file():
-            raise TwitterHelperError(f"Media path is not a file: {source_path}")
-
-    try:
-        content_type = mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"
-        with source_path.open("rb") as f:
-            resp = requests.post(
-                MEDIA_UPLOAD_URL,
-                headers={"Authorization": f"Bearer {access_token}"},
-                files={"media": (source_path.name, f, content_type)},
-                timeout=45,
-            )
-        if resp.status_code < 200 or resp.status_code >= 300:
-            raise TwitterHelperError(f"Media upload failed ({resp.status_code}): {resp.text}")
+    for idx, media_input in enumerate(media_inputs):
+        temp_path: Optional[Path] = None
+        source_path: Path
+        if media_input.startswith(("http://", "https://")):
+            print(f"Downloading media from URL: {media_input}")
+            suffix = Path(urllib.parse.urlparse(media_input).path).suffix or ".jpg"
+            with urllib.request.urlopen(media_input, timeout=30) as resp:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(resp.read())
+                    source_path = Path(tmp.name)
+                    temp_path = source_path
+        else:
+            source_path = Path(media_input).expanduser()
+            if not source_path.exists():
+                raise TwitterHelperError(f"Media file not found: {source_path}")
+            if not source_path.is_file():
+                raise TwitterHelperError(f"Media path is not a file: {source_path}")
 
         try:
-            payload = resp.json()
-        except Exception as exc:
-            raise TwitterHelperError(f"Media upload returned non-JSON response: {resp.text}") from exc
+            size_mb = source_path.stat().st_size / (1024 * 1024)
+            if size_mb > MAX_SIZE_MB:
+                raise TwitterHelperError(
+                    f"Image too large ({size_mb:.1f} MB > {MAX_SIZE_MB} MB): {source_path.name}"
+                )
+            content_type = mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"
+            if content_type not in ALLOWED_MIME:
+                raise TwitterHelperError(
+                    f"Unsupported MIME type {content_type} for {source_path.name}. "
+                    f"Allowed: {', '.join(sorted(ALLOWED_MIME))}"
+                )
+            last_err: Optional[str] = None
+            payload: Dict[str, object] = {}
+            for attempt in range(2):
+                with source_path.open("rb") as f:
+                    resp = requests.post(
+                        MEDIA_UPLOAD_URL,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        files={"media": (source_path.name, f, content_type)},
+                        timeout=45,
+                    )
+                if 200 <= resp.status_code < 300:
+                    try:
+                        payload = resp.json()
+                    except Exception as exc:
+                        raise TwitterHelperError(
+                            f"Media upload returned non-JSON response: {resp.text}"
+                        ) from exc
+                    break
+                last_err = f"{resp.status_code}: {resp.text}"
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                    time.sleep(2)
+                    continue
+                raise TwitterHelperError(f"Media upload failed ({resp.status_code}): {resp.text}")
 
-        media_data = payload.get("data") if isinstance(payload, dict) else None
-        media_id = str(media_data.get("id", "")) if isinstance(media_data, dict) else ""
-        if not media_id:
-            raise TwitterHelperError(f"Media upload returned no media id: {json.dumps(payload, ensure_ascii=False)}")
-
-        if alt_text:
-            status, body = http_json(
-                "POST",
-                MEDIA_METADATA_URL,
-                {"Authorization": f"Bearer {access_token}"},
-                payload={"media_id": media_id, "alt_text": {"text": alt_text}},
-            )
-            if status < 200 or status >= 300:
-                print(
-                    "[WARN] Alt text metadata could not be applied "
-                    f"({status}): {json.dumps(body, ensure_ascii=False)}"
+            media_data = payload.get("data") if isinstance(payload, dict) else None
+            media_id = str(media_data.get("id", "")) if isinstance(media_data, dict) else ""
+            if not media_id and isinstance(payload, dict):
+                media_id = str(payload.get("media_id_string", "")).strip()
+            if not media_id:
+                raise TwitterHelperError(
+                    "Media upload returned no media id: "
+                    f"{json.dumps(payload if payload else {'error': last_err}, ensure_ascii=False)}"
                 )
 
-        print(f"Media uploaded: id={media_id} ({source_path.name})")
-        return media_id
-    finally:
-        if temp_path and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except Exception:
-                pass
+            alt_text = alt_texts[idx].strip() if idx < len(alt_texts) and alt_texts[idx] else ""
+            if alt_text:
+                status, body = http_json(
+                    "POST",
+                    MEDIA_METADATA_URL,
+                    {"Authorization": f"Bearer {access_token}"},
+                    payload={"media_id": media_id, "alt_text": {"text": alt_text}},
+                )
+                if status < 200 or status >= 300:
+                    print(
+                        "[WARN] Alt text metadata could not be applied "
+                        f"({status}): {json.dumps(body, ensure_ascii=False)}"
+                    )
+
+            print(f"Media uploaded: id={media_id} ({source_path.name}, {content_type}, {size_mb:.1f} MB)")
+            media_ids.append(media_id)
+        finally:
+            if temp_path and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+
+    return media_ids
 
 
 def post_tweet(
@@ -1197,6 +1235,94 @@ def save_query_since_id(query: str, account: str, tweet_id: str) -> None:
     path.write_text(tweet_id.strip(), encoding="utf-8")
 
 
+def save_for_approval(item: Dict[str, object]) -> str:
+    qid = uuid.uuid4().hex[:8]
+    payload = dict(item)
+    payload["id"] = qid
+    payload["queued_at"] = datetime.now(timezone.utc).isoformat()
+    path = APPROVAL_DIR / f"q_{qid}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Queued for approval: q_{qid}")
+    return qid
+
+
+def list_approval_queue() -> List[Dict[str, object]]:
+    out: List[Dict[str, object]] = []
+    for p in sorted(APPROVAL_DIR.glob("q_*.json")):
+        try:
+            row = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(row, dict):
+                row["_path"] = str(p)
+                out.append(row)
+        except Exception:
+            continue
+    return out
+
+
+def cmd_reply_approve(env_path: Path, args: argparse.Namespace) -> int:
+    queue = list_approval_queue()
+    if args.list or not args.approve:
+        if args.json:
+            print(json.dumps({"count": len(queue), "items": queue}, ensure_ascii=False, indent=2))
+        else:
+            print(f"Pending approvals: {len(queue)}")
+            for row in queue:
+                qid = str(row.get("id", ""))
+                conf = row.get("confidence", "n/a")
+                txt = str(row.get("text", "")).replace("\n", " ").strip()
+                print(f"- q_{qid} | conf={conf} | {txt[:120]}")
+        return 0
+
+    cfg: Optional[Config] = None
+    env_values: Dict[str, str] = {}
+    wanted = set()
+    for raw in args.approve:
+        x = raw.strip()
+        if not x:
+            continue
+        if x.startswith("q_"):
+            x = x[2:]
+        wanted.add(x)
+
+    posted = 0
+    for row in queue:
+        qid = str(row.get("id", "")).strip()
+        if qid not in wanted:
+            continue
+        text = str(row.get("text", "")).strip()
+        reply_to = str(row.get("in_reply_to", "")).strip() or None
+        if not text:
+            print(f"[WARN] q_{qid} missing text, skipping")
+            continue
+        if args.dry_run:
+            print(f"dry-run approve q_{qid}: {text[:140]}")
+            continue
+        if cfg is None:
+            cfg, env_values = resolve_config(env_path)
+        fresh, (status, body) = post_with_retry(
+            cfg,
+            env_path,
+            env_values,
+            text,
+            reply_to_id=reply_to,
+        )
+        if status < 200 or status >= 300:
+            print(f"[FAIL] q_{qid} post failed: {json.dumps(body, ensure_ascii=False)}")
+            continue
+        data = body.get("data") if isinstance(body, dict) else None
+        posted_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+        if posted_id:
+            _, posted_url = verify_post_visible(fresh, posted_id)
+            print(f"Posted q_{qid}: {posted_url}")
+        path = Path(str(row.get("_path", "")))
+        if path.exists():
+            path.unlink()
+        posted += 1
+
+    print(f"Approved and posted: {posted}")
+    return 0
+
+
 def fetch_conversation_chain(
     bearer: str,
     tweet_id: str,
@@ -1309,7 +1435,8 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
         if not queries:
             queries = ['openclaw OR "local ai agent" lang:en -is:retweet min_faves:5']
 
-    post_enabled = bool(args.auto_post and not args.dry_run)
+    approval_queue_enabled = bool(getattr(args, "approval_queue", False))
+    post_enabled = bool(args.auto_post and not args.dry_run and not approval_queue_enabled)
     cfg: Optional[Config] = None
     env_values: Dict[str, str] = {}
     if post_enabled:
@@ -1377,7 +1504,25 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                 "action": "draft",
             }
 
-            if post_enabled and cfg is not None and draft and confidence >= args.min_confidence:
+            if (
+                approval_queue_enabled
+                and draft
+                and confidence >= args.min_confidence
+            ):
+                qid = save_for_approval(
+                    {
+                        "text": draft,
+                        "in_reply_to": tid,
+                        "confidence": confidence,
+                        "reason": "discover_run_threshold",
+                        "source": "reply-discover-run",
+                        "query": query,
+                        "tweet_text": text,
+                    }
+                )
+                item["action"] = "queued"
+                item["queue_id"] = f"q_{qid}"
+            elif post_enabled and cfg is not None and draft and confidence >= args.min_confidence:
                 fresh, (status, body) = post_with_retry(
                     cfg,
                     env_path,
@@ -1419,6 +1564,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
         "min_score": args.min_score,
         "min_confidence": args.min_confidence,
         "auto_post": args.auto_post,
+        "approval_queue": approval_queue_enabled,
         "dry_run": args.dry_run,
         "total_seen": total_seen,
         "total_candidates": total_candidates,
@@ -2217,6 +2363,8 @@ def cmd_doctor(env_path: Path) -> int:
     scopes = get_env_value(env, "TWITTER_SCOPES", DEFAULT_SCOPES)
     if "media.write" not in scopes.split():
         print("[WARN] media.write scope not configured. Media upload requires re-auth with media.write scope.")
+    else:
+        print("[PASS] Media upload ready (multi-image, size/MIME validation enabled).")
     if not get_env_value(env, "TWITTER_BEARER_TOKEN"):
         print(
             "[WARN] TWITTER_BEARER_TOKEN is missing. "
@@ -2476,12 +2624,17 @@ def cmd_post(
     fresh = ensure_auth(cfg, env_path, env_values)
     media_ids: Optional[List[str]] = None
     if getattr(args, "media", None):
-        media_id = upload_media(
-            access_token=fresh.access_token,
-            media_input=args.media,
-            alt_text=getattr(args, "alt_text", None),
+        media_list = [x.strip() for x in str(args.media).split(",") if x.strip()]
+        alt_list = (
+            [x.strip() for x in str(getattr(args, "alt_text", "")).split(",")]
+            if getattr(args, "alt_text", None)
+            else None
         )
-        media_ids = [media_id]
+        media_ids = upload_media(
+            access_token=fresh.access_token,
+            media_inputs=media_list,
+            alt_texts=alt_list,
+        )
 
     if args.in_reply_to:
         check_status, check_body = fetch_tweet(fresh, args.in_reply_to)
@@ -2648,8 +2801,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--in-reply-to",
         help="Optional tweet ID to post as a reply",
     )
-    p_post.add_argument("--media", help="Optional image path or URL to attach")
-    p_post.add_argument("--alt-text", help="Optional alt text for attached media")
+    p_post.add_argument(
+        "--media",
+        help="Optional comma-separated image paths/URLs to attach (max 5 images)",
+    )
+    p_post.add_argument(
+        "--alt-text",
+        help="Optional comma-separated alt text values matching --media order",
+    )
     p_post.add_argument(
         "--dry-run",
         action="store_true",
@@ -2763,10 +2922,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover_run.add_argument("--min-score", type=int, default=20, help="Minimum engagement score")
     p_discover_run.add_argument("--min-confidence", type=int, default=75, help="Minimum confidence required for auto-post")
     p_discover_run.add_argument("--auto-post", action="store_true", help="Auto-post qualified replies")
+    p_discover_run.add_argument(
+        "--approval-queue",
+        action="store_true",
+        help="Queue qualified replies for manual approval instead of posting immediately",
+    )
     p_discover_run.add_argument("--dry-run", action="store_true", help="Generate drafts only, never post")
     p_discover_run.add_argument("--output", default="data/discovery_latest.json", help="Where to save JSON output")
     p_discover_run.add_argument("--preview", type=int, default=5, help="Rows to print in non-JSON mode")
     p_discover_run.add_argument("--json", action="store_true", help="Print raw JSON output")
+
+    p_reply_approve = sub.add_parser(
+        "reply-approve",
+        help="Review approval queue and post selected queued replies",
+    )
+    p_reply_approve.add_argument("--list", action="store_true", help="List queued replies")
+    p_reply_approve.add_argument(
+        "--approve",
+        nargs="*",
+        help="Queue IDs to approve/post (accepts with or without q_ prefix)",
+    )
+    p_reply_approve.add_argument("--dry-run", action="store_true", help="Preview approve actions without posting")
+    p_reply_approve.add_argument("--json", action="store_true", help="Print queue list as JSON")
 
     p_inspire = sub.add_parser(
         "inspire-tweets",
@@ -2876,6 +3053,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_search(env_path, args)
         if args.command == "reply-discover-run":
             return cmd_reply_discover_run(env_path, args)
+        if args.command == "reply-approve":
+            return cmd_reply_approve(env_path, args)
         if args.command == "inspire-tweets":
             return cmd_inspire_tweets(env_path, args)
         if args.command in {
