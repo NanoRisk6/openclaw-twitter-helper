@@ -57,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     e2e = sub.add_parser("twitter-e2e", help="End-to-end mentions workflow for OpenClaw")
     e2e.add_argument("--handle", default="OpenClawAI", help="target account handle")
     e2e.add_argument("--mention-limit", type=int, default=20)
+    e2e.add_argument("--since-id", default=None, help="Only include mentions newer than this tweet ID")
     e2e.add_argument("--draft-count", type=int, default=5)
     e2e.add_argument("--pick", type=int, default=1, help="1-based draft index")
     e2e.add_argument("--post", action="store_true", help="post replies (default is draft-only)")
@@ -128,6 +129,7 @@ def main() -> None:
         result = run_mentions_workflow(
             handle=args.handle,
             mention_limit=args.mention_limit,
+            since_id=args.since_id,
             draft_count=args.draft_count,
             pick=args.pick,
             post=args.post,

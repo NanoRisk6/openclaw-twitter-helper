@@ -5,10 +5,12 @@ import hashlib
 import importlib.util
 import json
 import math
+import mimetypes
 import os
 import re
 import secrets
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from email.message import Message
@@ -18,14 +20,16 @@ import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 API_BASE = "https://api.twitter.com/2"
 TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
 AUTH_URL = "https://twitter.com/i/oauth2/authorize"
+MEDIA_UPLOAD_URL = f"{API_BASE}/media/upload"
+MEDIA_METADATA_URL = f"{API_BASE}/media/metadata"
 MAX_TWEET_LEN = 280
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
-DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access"
+DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access media.write"
 OPENCLAW_SUFFIX_RE = re.compile(
     r"\s*\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]\s*$", re.IGNORECASE
 )
@@ -73,6 +77,11 @@ try:
     import keyring
 except Exception:  # pragma: no cover - optional dependency fallback
     keyring = None
+
+try:
+    import requests
+except Exception:  # pragma: no cover - optional dependency fallback
+    requests = None
 
 
 STOPWORDS = {
@@ -540,10 +549,86 @@ def verify_post_visible(
     )
 
 
+def upload_media(
+    access_token: str,
+    media_input: str,
+    alt_text: Optional[str] = None,
+) -> str:
+    if requests is None:
+        raise TwitterHelperError("Missing dependency `requests`. Install with `pip install -r requirements.txt`.")
+    if not access_token:
+        raise TwitterHelperError("No OAuth2 access token found for media upload.")
+    if not media_input:
+        raise TwitterHelperError("Media input is empty.")
+
+    temp_path: Optional[Path] = None
+    source_path: Path
+
+    if media_input.startswith(("http://", "https://")):
+        print(f"Downloading media from URL: {media_input}")
+        suffix = Path(urllib.parse.urlparse(media_input).path).suffix or ".jpg"
+        with urllib.request.urlopen(media_input, timeout=30) as resp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(resp.read())
+                source_path = Path(tmp.name)
+                temp_path = source_path
+    else:
+        source_path = Path(media_input).expanduser()
+        if not source_path.exists():
+            raise TwitterHelperError(f"Media file not found: {source_path}")
+        if not source_path.is_file():
+            raise TwitterHelperError(f"Media path is not a file: {source_path}")
+
+    try:
+        content_type = mimetypes.guess_type(source_path.name)[0] or "application/octet-stream"
+        with source_path.open("rb") as f:
+            resp = requests.post(
+                MEDIA_UPLOAD_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                files={"media": (source_path.name, f, content_type)},
+                timeout=45,
+            )
+        if resp.status_code < 200 or resp.status_code >= 300:
+            raise TwitterHelperError(f"Media upload failed ({resp.status_code}): {resp.text}")
+
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise TwitterHelperError(f"Media upload returned non-JSON response: {resp.text}") from exc
+
+        media_data = payload.get("data") if isinstance(payload, dict) else None
+        media_id = str(media_data.get("id", "")) if isinstance(media_data, dict) else ""
+        if not media_id:
+            raise TwitterHelperError(f"Media upload returned no media id: {json.dumps(payload, ensure_ascii=False)}")
+
+        if alt_text:
+            status, body = http_json(
+                "POST",
+                MEDIA_METADATA_URL,
+                {"Authorization": f"Bearer {access_token}"},
+                payload={"media_id": media_id, "alt_text": {"text": alt_text}},
+            )
+            if status < 200 or status >= 300:
+                print(
+                    "[WARN] Alt text metadata could not be applied "
+                    f"({status}): {json.dumps(body, ensure_ascii=False)}"
+                )
+
+        print(f"Media uploaded: id={media_id} ({source_path.name})")
+        return media_id
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
+
 def post_tweet(
     cfg: Config,
     text: str,
     reply_to_id: Optional[str] = None,
+    media_ids: Optional[List[str]] = None,
     run_tag: Optional[str] = None,
 ) -> Tuple[int, Dict[str, object]]:
     sanitized_text = sanitize_public_text(text)
@@ -556,6 +641,8 @@ def post_tweet(
     payload: Dict[str, object] = {"text": sanitized_text}
     if reply_to_id:
         payload["reply"] = {"in_reply_to_tweet_id": reply_to_id}
+    if media_ids:
+        payload["media"] = {"media_ids": media_ids}
 
     return http_json(
         "POST",
@@ -739,6 +826,7 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
         result = run_mentions_workflow(
             handle=args.handle,
             mention_limit=args.mention_limit,
+            since_id=getattr(args, "since_id", None),
             draft_count=args.draft_count,
             pick=args.pick,
             post=args.post,
@@ -1055,6 +1143,313 @@ def cmd_mentions(env_path: Path, args: argparse.Namespace) -> int:
             print(f"   https://x.com/{username}/status/{tid}")
         else:
             print(f"   https://x.com/i/web/status/{tid}")
+    return 0
+
+
+def score_tweet_for_discovery(tweet: Dict[str, object]) -> int:
+    metrics = tweet.get("public_metrics") if isinstance(tweet, dict) else None
+    if not isinstance(metrics, dict):
+        return 0
+    likes = int(metrics.get("like_count", 0) or 0)
+    retweets = int(metrics.get("retweet_count", 0) or 0)
+    replies = int(metrics.get("reply_count", 0) or 0)
+    quotes = int(metrics.get("quote_count", 0) or 0)
+    # Bias toward active threads and discussion opportunities.
+    return likes + (retweets * 2) + (replies * 3) + (quotes * 2)
+
+
+def watchlists_path() -> Path:
+    return TOKEN_CONFIG_DIR / "watchlists.json"
+
+
+def load_watchlists() -> Dict[str, List[str]]:
+    path = watchlists_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, List[str]] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and isinstance(v, list):
+            out[k] = [str(x).strip() for x in v if str(x).strip()]
+    return out
+
+
+def query_checkpoint_path(query: str, account: str) -> Path:
+    digest = hashlib.sha1(f"{account}:{query}".encode("utf-8")).hexdigest()[:12]
+    return TOKEN_CONFIG_DIR / f"search_since_id_{digest}.txt"
+
+
+def load_query_since_id(query: str, account: str) -> Optional[str]:
+    path = query_checkpoint_path(query, account)
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
+def save_query_since_id(query: str, account: str, tweet_id: str) -> None:
+    path = query_checkpoint_path(query, account)
+    path.write_text(tweet_id.strip(), encoding="utf-8")
+
+
+def fetch_conversation_chain(
+    bearer: str,
+    tweet_id: str,
+    max_depth: int = 8,
+) -> List[Dict[str, object]]:
+    chain: List[Dict[str, object]] = []
+    current = str(tweet_id).strip()
+    seen: Set[str] = set()
+
+    while current and current not in seen and len(chain) < max_depth:
+        seen.add(current)
+        status, body = api_get_with_token(
+            (
+                f"{API_BASE}/tweets/{current}"
+                "?expansions=author_id&tweet.fields=created_at,text,author_id,conversation_id,referenced_tweets"
+                "&user.fields=username,name"
+            ),
+            bearer,
+        )
+        if status >= 400 or not isinstance(body, dict):
+            break
+
+        data = body.get("data")
+        if not isinstance(data, dict):
+            break
+        includes = body.get("includes")
+        users = includes.get("users") if isinstance(includes, dict) else None
+        user_map: Dict[str, str] = {}
+        if isinstance(users, list):
+            for u in users:
+                if isinstance(u, dict):
+                    user_map[str(u.get("id", ""))] = str(u.get("username", "unknown"))
+        author_id = str(data.get("author_id", ""))
+        chain.append(
+            {
+                "tweet_id": str(data.get("id", "")),
+                "author": user_map.get(author_id, "unknown"),
+                "text": str(data.get("text", "")),
+                "created_at": str(data.get("created_at", "")),
+                "conversation_id": str(data.get("conversation_id", "")),
+            }
+        )
+
+        refs = data.get("referenced_tweets")
+        next_id = ""
+        if isinstance(refs, list):
+            for ref in refs:
+                if isinstance(ref, dict) and str(ref.get("type", "")) == "replied_to":
+                    next_id = str(ref.get("id", "")).strip()
+                    break
+        current = next_id
+
+    chain.reverse()
+    return chain
+
+
+def cmd_search(env_path: Path, args: argparse.Namespace) -> int:
+    env = load_env_file(env_path)
+    bearer = get_read_bearer_token(env, env_path)
+    limit = max(5, min(args.limit, 100))
+    rows, users, meta = fetch_search_rows(
+        bearer=bearer,
+        query=args.query,
+        limit=limit,
+        max_pages=max(1, min(args.max_pages, 10)),
+        since_id=args.since_id,
+    )
+
+    payload = {
+        "query": args.query,
+        "count": len(rows),
+        "users": users,
+        "meta": meta,
+        "data": rows,
+    }
+    if args.save:
+        out = Path(args.save)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Saved search output -> {out}")
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"Search query: {args.query}")
+    print(f"Results: {len(rows)}")
+    for i, row in enumerate(rows[: args.preview], start=1):
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("id", ""))
+        aid = str(row.get("author_id", ""))
+        username = users.get(aid, "unknown")
+        score = score_tweet_for_discovery(row)
+        text = str(row.get("text", "")).replace("\n", " ").strip()
+        print(f"{i}. score={score} @{username} | {tid}")
+        print(f"   {text}")
+    return 0
+
+
+def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
+    env = load_env_file(env_path)
+    bearer = get_read_bearer_token(env, env_path)
+    queries: List[str] = []
+    if args.query:
+        queries = [args.query]
+    else:
+        watchlists = load_watchlists()
+        queries = watchlists.get(args.watchlist or "default", [])
+        if not queries:
+            queries = ['openclaw OR "local ai agent" lang:en -is:retweet min_faves:5']
+
+    post_enabled = bool(args.auto_post and not args.dry_run)
+    cfg: Optional[Config] = None
+    env_values: Dict[str, str] = {}
+    if post_enabled:
+        cfg, env_values = resolve_config(env_path)
+
+    try:
+        from reply_engine.twitter_helper import generate_reply_drafts
+    except Exception as exc:
+        raise TwitterHelperError(
+            "Reply engine not ready. Install dependencies with: pip install -r requirements-reply-engine.txt"
+        ) from exc
+
+    total_seen = 0
+    total_candidates = 0
+    total_posted = 0
+    per_query_results: List[Dict[str, object]] = []
+
+    for query in queries:
+        effective_since = args.since_id or load_query_since_id(query, ACTIVE_ACCOUNT)
+        rows, users, _ = fetch_search_rows(
+            bearer=bearer,
+            query=query,
+            limit=max(5, min(args.max_tweets, 100)),
+            max_pages=max(1, min(args.max_pages, 10)),
+            since_id=effective_since,
+        )
+        total_seen += len(rows)
+        max_seen_id: Optional[str] = None
+        query_rows: List[Dict[str, object]] = []
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            tid = str(row.get("id", ""))
+            if tid.isdigit():
+                if max_seen_id is None or int(tid) > int(max_seen_id):
+                    max_seen_id = tid
+
+            score = score_tweet_for_discovery(row)
+            if score < args.min_score:
+                continue
+            total_candidates += 1
+            aid = str(row.get("author_id", ""))
+            author = users.get(aid, "unknown")
+            text = str(row.get("text", "")).strip()
+
+            context_chain = fetch_conversation_chain(bearer=bearer, tweet_id=tid, max_depth=6)
+            context_text = "\n".join(
+                [str(x.get("text", "")).strip() for x in context_chain[:-1] if x.get("text")]
+            ).strip()
+
+            draft_input = text if not context_text else f"{text}\n\nThread context:\n{context_text}"
+            drafts = generate_reply_drafts(author=author, text=draft_input, draft_count=3)
+            draft = drafts[0] if drafts else ""
+            confidence = max(40, min(95, 50 + int(score / 8)))
+
+            item = {
+                "tweet_id": tid,
+                "author": author,
+                "score": score,
+                "confidence": confidence,
+                "tweet_text": text,
+                "thread_context": context_text,
+                "draft_reply": draft,
+                "action": "draft",
+            }
+
+            if post_enabled and cfg is not None and draft and confidence >= args.min_confidence:
+                fresh, (status, body) = post_with_retry(
+                    cfg,
+                    env_path,
+                    env_values,
+                    draft,
+                    reply_to_id=tid,
+                )
+                if status < 200 or status >= 300:
+                    item["action"] = "post_failed"
+                    item["error"] = json.dumps(body, ensure_ascii=False)
+                else:
+                    data = body.get("data") if isinstance(body, dict) else None
+                    posted_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+                    if posted_id:
+                        _, posted_url = verify_post_visible(fresh, posted_id)
+                        item["action"] = "posted"
+                        item["posted_tweet_id"] = posted_id
+                        item["posted_url"] = posted_url
+                        total_posted += 1
+            query_rows.append(item)
+
+        if max_seen_id:
+            save_query_since_id(query, ACTIVE_ACCOUNT, max_seen_id)
+
+        per_query_results.append(
+            {
+                "query": query,
+                "since_id": effective_since,
+                "next_since_id": max_seen_id,
+                "results": query_rows,
+            }
+        )
+
+    payload = {
+        "account": ACTIVE_ACCOUNT,
+        "watchlist": args.watchlist,
+        "queries": queries,
+        "max_tweets": args.max_tweets,
+        "min_score": args.min_score,
+        "min_confidence": args.min_confidence,
+        "auto_post": args.auto_post,
+        "dry_run": args.dry_run,
+        "total_seen": total_seen,
+        "total_candidates": total_candidates,
+        "total_posted": total_posted,
+        "results": per_query_results,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Saved discovery output -> {out}")
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"Queries: {len(queries)}")
+    print(f"Seen: {total_seen} | candidates: {total_candidates} | posted: {total_posted}")
+    for q in per_query_results:
+        print(f"- {q['query']}")
+        rows = q.get("results", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows[: args.preview]:
+            if not isinstance(row, dict):
+                continue
+            print(
+                f"  {row.get('action')} | score={row.get('score')} conf={row.get('confidence')} "
+                f"| {row.get('tweet_id')} | @{row.get('author')}"
+            )
     return 0
 
 
@@ -1615,14 +2010,27 @@ def post_with_retry(
     env_values: Dict[str, str],
     text: str,
     reply_to_id: Optional[str] = None,
+    media_ids: Optional[List[str]] = None,
 ) -> Tuple[Config, Tuple[int, Dict[str, object]]]:
     run_tag = unique_marker("openclaw")
     fresh = ensure_auth(cfg, env_path, env_values)
-    status, body = post_tweet(fresh, text, reply_to_id=reply_to_id, run_tag=run_tag)
+    status, body = post_tweet(
+        fresh,
+        text,
+        reply_to_id=reply_to_id,
+        media_ids=media_ids,
+        run_tag=run_tag,
+    )
     # Retry once only for auth-expired failures.
     if status == 401:
         fresh = refresh_tokens(fresh, env_path, env_values)
-        status, body = post_tweet(fresh, text, reply_to_id=reply_to_id, run_tag=run_tag)
+        status, body = post_tweet(
+            fresh,
+            text,
+            reply_to_id=reply_to_id,
+            media_ids=media_ids,
+            run_tag=run_tag,
+        )
     return fresh, (status, body)
 
 
@@ -1806,6 +2214,9 @@ def cmd_doctor(env_path: Path) -> int:
         return 1
 
     print("[PASS] Config values are present.")
+    scopes = get_env_value(env, "TWITTER_SCOPES", DEFAULT_SCOPES)
+    if "media.write" not in scopes.split():
+        print("[WARN] media.write scope not configured. Media upload requires re-auth with media.write scope.")
     if not get_env_value(env, "TWITTER_BEARER_TOKEN"):
         print(
             "[WARN] TWITTER_BEARER_TOKEN is missing. "
@@ -2054,10 +2465,25 @@ def cmd_post(
         text = make_unique_public_tweet(text)
 
     validate_tweet_len(text)
+    if getattr(args, "dry_run", False):
+        print(text)
+        if getattr(args, "media", None):
+            print(f"dry-run: would attach media from {args.media}")
+        return 0
+
     print(f"Posting tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
 
+    fresh = ensure_auth(cfg, env_path, env_values)
+    media_ids: Optional[List[str]] = None
+    if getattr(args, "media", None):
+        media_id = upload_media(
+            access_token=fresh.access_token,
+            media_input=args.media,
+            alt_text=getattr(args, "alt_text", None),
+        )
+        media_ids = [media_id]
+
     if args.in_reply_to:
-        fresh = ensure_auth(cfg, env_path, env_values)
         check_status, check_body = fetch_tweet(fresh, args.in_reply_to)
         if check_status >= 400:
             raise TwitterHelperError(
@@ -2071,11 +2497,12 @@ def cmd_post(
             )
 
     fresh, (status, body) = post_with_retry(
-        cfg,
+        fresh,
         env_path,
         env_values,
         text,
         reply_to_id=args.in_reply_to,
+        media_ids=media_ids,
     )
 
     if status < 200 or status >= 300:
@@ -2221,6 +2648,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--in-reply-to",
         help="Optional tweet ID to post as a reply",
     )
+    p_post.add_argument("--media", help="Optional image path or URL to attach")
+    p_post.add_argument("--alt-text", help="Optional alt text for attached media")
+    p_post.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print final tweet text (and media intent) without posting",
+    )
 
     p_oc_auto = sub.add_parser(
         "openclaw-autopost",
@@ -2305,6 +2739,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_mentions.add_argument("--preview", type=int, default=5, help="Rows to print in non-JSON mode")
     p_mentions.add_argument("--json", action="store_true", help="Print raw JSON output")
 
+    p_search = sub.add_parser(
+        "search",
+        help="Proactive discovery across X recent search",
+    )
+    p_search.add_argument("--query", required=True, help="Recent search query")
+    p_search.add_argument("--limit", type=int, default=20, help="Results per page (5-100)")
+    p_search.add_argument("--max-pages", type=int, default=1, help="Pagination pages to fetch (1-10)")
+    p_search.add_argument("--since-id", help="Only include tweets newer than this tweet ID")
+    p_search.add_argument("--save", help="Optional file path to save output JSON")
+    p_search.add_argument("--preview", type=int, default=5, help="Rows to print in non-JSON mode")
+    p_search.add_argument("--json", action="store_true", help="Print raw JSON output")
+
+    p_discover_run = sub.add_parser(
+        "reply-discover-run",
+        help="Proactive discovery + draft/auto-reply pipeline",
+    )
+    p_discover_run.add_argument("--watchlist", default="default", help="Watchlist name from ~/.config/openclaw-twitter-helper/watchlists.json")
+    p_discover_run.add_argument("--query", help="One-off query (overrides --watchlist)")
+    p_discover_run.add_argument("--since-id", help="Override checkpoint and only include newer tweets than this ID")
+    p_discover_run.add_argument("--max-tweets", type=int, default=10, help="Max tweets to fetch per query")
+    p_discover_run.add_argument("--max-pages", type=int, default=1, help="Pagination pages per query")
+    p_discover_run.add_argument("--min-score", type=int, default=20, help="Minimum engagement score")
+    p_discover_run.add_argument("--min-confidence", type=int, default=75, help="Minimum confidence required for auto-post")
+    p_discover_run.add_argument("--auto-post", action="store_true", help="Auto-post qualified replies")
+    p_discover_run.add_argument("--dry-run", action="store_true", help="Generate drafts only, never post")
+    p_discover_run.add_argument("--output", default="data/discovery_latest.json", help="Where to save JSON output")
+    p_discover_run.add_argument("--preview", type=int, default=5, help="Rows to print in non-JSON mode")
+    p_discover_run.add_argument("--json", action="store_true", help="Print raw JSON output")
+
     p_inspire = sub.add_parser(
         "inspire-tweets",
         help="Browse Twitter and generate inspiration drafts from current conversation themes",
@@ -2372,6 +2835,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reply_e2e.add_argument("--handle", default="OpenClawAI")
     p_reply_e2e.add_argument("--mention-limit", type=int, default=20)
+    p_reply_e2e.add_argument("--since-id", default=None, help="Only include mentions newer than this tweet ID")
     p_reply_e2e.add_argument("--draft-count", type=int, default=5)
     p_reply_e2e.add_argument("--pick", type=int, default=1)
     p_reply_e2e.add_argument("--post", action="store_true")
@@ -2408,6 +2872,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_browse_twitter(env_path, args)
         if args.command == "mentions":
             return cmd_mentions(env_path, args)
+        if args.command == "search":
+            return cmd_search(env_path, args)
+        if args.command == "reply-discover-run":
+            return cmd_reply_discover_run(env_path, args)
         if args.command == "inspire-tweets":
             return cmd_inspire_tweets(env_path, args)
         if args.command in {

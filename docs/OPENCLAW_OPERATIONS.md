@@ -22,11 +22,13 @@ All commands exposed by `python src/twitter_helper.py`:
 - `restart-setup`: reboot-safe setup/auth repair flow without posting
 - `browse-twitter`: read/search/user timeline/tweet fetch command
 - `mentions`: native mentions endpoint fetch via `/2/users/:id/mentions`
+- `search`: proactive recent search across X using full query operators
 - `inspire-tweets`: browse + generate concise draft tweet ideas
 - `reply-discover`: discover candidate tweets for replies
 - `reply-rank`: rank discovered candidates by relevance/quality
 - `reply-ideas`: turn ranked candidates into drafted replies
 - `reply-run`: end-to-end discover/rank/ideas pipeline
+- `reply-discover-run`: proactive discover + draft/auto-reply pipeline
 - `reply-twitter-helper`: draft/post to one specific tweet target
 - `reply-twitter-e2e`: mentions workflow with optional posting cap
 
@@ -46,17 +48,20 @@ All commands exposed by `python src/twitter_helper.py`:
 | One-command post flow | `python src/twitter_helper.py run-twitter-helper --text "..."` | OAuth2 tokens | one unique tweet posted |
 | Restart recovery (no post) | `python src/twitter_helper.py restart-setup` | OAuth2/browser if needed | repaired auth/setup |
 | Post single tweet | `python src/twitter_helper.py post --text "..."` | OAuth2 tokens | tweet posted |
+| Post with media | `python src/twitter_helper.py post --text "..." --media <path-or-url>` | OAuth2 tokens + `media.write` scope | tweet + image posted |
 | Reply to tweet | `python src/twitter_helper.py post --text "..." --in-reply-to <ID>` | OAuth2 tokens + visible target | reply posted |
 | Thread post | `python src/twitter_helper.py thread --file examples/thread.txt` | OAuth2 tokens | thread posted |
 | Open Claw autopost | `python src/twitter_helper.py openclaw-autopost --text "..."` | OAuth2 tokens | tweet posted |
 | Browse Twitter search/user/tweet | `python src/twitter_helper.py browse-twitter ...` | Bearer token (or OAuth2 fallback) | console/JSON browse output |
 | Native mentions endpoint | `python src/twitter_helper.py mentions ...` | Bearer token (or OAuth2 fallback) | mentions JSON + console summary |
+| Proactive search | `python src/twitter_helper.py search --query "..." ...` | Bearer token (or OAuth2 fallback) | ranked discovery feed |
 | Generate inspiration drafts | `python src/twitter_helper.py inspire-tweets ...` | Bearer token (or OAuth2 fallback) | theme summary + drafts |
 | Reply discovery | `python src/twitter_helper.py reply-discover ...` | internet only | `data/discovered.json` |
 | Reply ranking | `python src/twitter_helper.py reply-rank ...` | none | `data/ranked.json` |
 | Reply ideas markdown | `python src/twitter_helper.py reply-ideas ...` | optional OpenAI key | `data/reply_ideas.md` |
 | Reply single target (draft/post) | `python src/twitter_helper.py reply-twitter-helper ...` | Bearer + OAuth1 keys for post | drafts + optional posted reply |
 | Mentions workflow (draft/post) | `python src/twitter_helper.py reply-twitter-e2e ...` | Bearer + OAuth1 keys for post | `data/mentions_report.json` + optional posts |
+| Proactive discover+reply | `python src/twitter_helper.py reply-discover-run ...` | Bearer, optional OAuth2 post token | drafts or auto-replies + JSON report |
 
 ## Required Environment Variables
 
@@ -128,6 +133,7 @@ Use absolute skill path for reliable execution:
 
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default diagnose --json"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'OpenClaw helper is live 🦞'"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'OpenClaw chart update 🦞' --media ./chart.png --dry-run"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'Great point, thanks for sharing.' --in-reply-to 1892345678901234567"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default browse-twitter --handle OpenClawAI --limit 10 --json"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default mentions --limit 20 --json"`

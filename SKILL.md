@@ -32,8 +32,11 @@ pip install -r requirements.txt
 | Action | Command |
 |---|---|
 | Post | `run-twitter-helper --account <name> post --text "..."` |
+| Post with media | `run-twitter-helper --account <name> post --text "..." --media <path-or-url> [--alt-text "..."] [--dry-run]` |
 | Reply | `run-twitter-helper --account <name> post --text "..." --in-reply-to <tweet_id>` |
 | Mentions | `run-twitter-helper --account <name> mentions --limit 20 [--since-id ID] [--json]` |
+| Search | `run-twitter-helper --account <name> search --query "openclaw lang:en min_faves:5"` |
+| Discover & reply | `run-twitter-helper --account <name> reply-discover-run --watchlist default [--auto-post] [--dry-run]` |
 | Browse mentions/search | `run-twitter-helper --account <name> browse-twitter --handle OpenClawAI --limit 20 --json` |
 | Diagnose | `run-twitter-helper --account <name> diagnose --json` |
 | Readiness check only | `run-twitter-helper --account <name> openclaw --json` |

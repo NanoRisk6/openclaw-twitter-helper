@@ -12,6 +12,7 @@ dependencies = [
   "tweepy",
   "requests-oauthlib",
   "python-dotenv",
+  "requests>=2.32.0",
   "keyring",
 ]
 

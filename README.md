@@ -104,6 +104,13 @@ Post single tweet:
 python src/twitter_helper.py post --text "hello from Open Claw"
 ```
 
+Post with media (image path or URL):
+
+```bash
+python src/twitter_helper.py post --text "OpenClaw update with chart 🦞" --media ./examples/chart.png --alt-text "Performance chart"
+python src/twitter_helper.py post --text "OpenClaw update with chart 🦞" --media https://picsum.photos/800/600 --dry-run
+```
+
 Post reply tweet:
 
 ```bash
@@ -191,6 +198,20 @@ Generate tweet inspiration from live Twitter browsing:
 python src/twitter_helper.py inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json
 ```
 
+Proactive discovery search:
+
+```bash
+python src/twitter_helper.py search --query "openclaw OR \"local ai agent\" lang:en -is:retweet min_faves:5" --limit 20
+python src/twitter_helper.py search --query "openclaw OR clawdbot lang:en" --since-id 2024835587052613989 --json
+```
+
+Proactive reply discovery run:
+
+```bash
+python src/twitter_helper.py reply-discover-run --watchlist default --max-tweets 15 --min-score 25 --dry-run
+python src/twitter_helper.py reply-discover-run --query "openclaw lang:en min_faves:10" --auto-post --min-confidence 80
+```
+
 ## Integrated Reply Engine
 
 Discover:
@@ -227,6 +248,7 @@ Mentions workflow:
 
 ```bash
 python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1
+python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --since-id 2024835587052613989 --draft-count 5 --pick 1
 ```
 
 For `reply-twitter-e2e` and other scan/read-heavy reply flows, set `TWITTER_BEARER_TOKEN` in `.env`.

@@ -1,6 +1,8 @@
 import importlib.util
 import io
+import sys
 import tempfile
+import types
 from pathlib import Path
 import contextlib
 from email.message import Message
@@ -55,9 +57,10 @@ class PostSanitizeTests(unittest.TestCase):
     def test_cmd_post_passes_reply_id(self) -> None:
         captured = {}
 
-        def fake_post_with_retry(cfg, env_path, env_values, text, reply_to_id=None):
+        def fake_post_with_retry(cfg, env_path, env_values, text, reply_to_id=None, media_ids=None):
             captured["reply_to_id"] = reply_to_id
             captured["text"] = text
+            captured["media_ids"] = media_ids
             return cfg, (201, {"data": {"id": "tweet123"}})
 
         cfg = twitter_helper.Config(
@@ -69,24 +72,36 @@ class PostSanitizeTests(unittest.TestCase):
         args = type(
             "Args",
             (),
-            {"text": "Thanks!", "file": None, "in_reply_to": None},
+            {
+                "text": "Thanks!",
+                "file": None,
+                "in_reply_to": None,
+                "unique": False,
+                "dry_run": False,
+                "media": None,
+                "alt_text": None,
+            },
         )()
 
         original_post_with_retry = twitter_helper.post_with_retry
         original_verify_post_visible = twitter_helper.verify_post_visible
+        original_ensure_auth = twitter_helper.ensure_auth
         twitter_helper.post_with_retry = fake_post_with_retry
         twitter_helper.verify_post_visible = lambda cfg, tweet_id, attempts=3, delay_seconds=1.0: (
             "",
             f"https://x.com/i/web/status/{tweet_id}",
         )
+        twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
         try:
             rc = twitter_helper.cmd_post(cfg, Path("."), {}, args)
         finally:
             twitter_helper.post_with_retry = original_post_with_retry
             twitter_helper.verify_post_visible = original_verify_post_visible
+            twitter_helper.ensure_auth = original_ensure_auth
 
         self.assertEqual(rc, 0)
         self.assertIsNone(captured["reply_to_id"])
+        self.assertIsNone(captured["media_ids"])
 
     def test_verify_post_visible_success(self) -> None:
         cfg = twitter_helper.Config(
@@ -142,7 +157,15 @@ class PostSanitizeTests(unittest.TestCase):
         args = type(
             "Args",
             (),
-            {"text": "Thanks!", "file": None, "in_reply_to": "2024832368729463259"},
+            {
+                "text": "Thanks!",
+                "file": None,
+                "in_reply_to": "2024832368729463259",
+                "unique": False,
+                "dry_run": False,
+                "media": None,
+                "alt_text": None,
+            },
         )()
 
         original_ensure_auth = twitter_helper.ensure_auth
@@ -452,6 +475,161 @@ class PostSanitizeTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertTrue(any("/users/u123/mentions?" in u for u in calls["urls"]))
+
+    def test_score_tweet_for_discovery(self) -> None:
+        row = {
+            "public_metrics": {
+                "like_count": 10,
+                "retweet_count": 2,
+                "reply_count": 3,
+                "quote_count": 1,
+            }
+        }
+        self.assertEqual(twitter_helper.score_tweet_for_discovery(row), 25)
+
+    def test_cmd_search_uses_recent_search(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            env_path = Path(td) / ".env"
+            env_path.write_text("TWITTER_BEARER_TOKEN=bearer\n", encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "query": "openclaw lang:en",
+                    "limit": 20,
+                    "max_pages": 1,
+                    "since_id": None,
+                    "save": None,
+                    "preview": 5,
+                    "json": True,
+                },
+            )()
+            original_fetch = twitter_helper.fetch_search_rows
+            twitter_helper.fetch_search_rows = lambda **kwargs: ([], {}, {})
+            try:
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    rc = twitter_helper.cmd_search(env_path, args)
+            finally:
+                twitter_helper.fetch_search_rows = original_fetch
+        self.assertEqual(rc, 0)
+        self.assertIn('"query": "openclaw lang:en"', output.getvalue())
+
+    def test_cmd_reply_discover_run_draft_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            env_path = Path(td) / ".env"
+            env_path.write_text("TWITTER_BEARER_TOKEN=bearer\n", encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "watchlist": "default",
+                    "query": "openclaw lang:en",
+                    "since_id": None,
+                    "max_tweets": 10,
+                    "max_pages": 1,
+                    "min_score": 1,
+                    "min_confidence": 75,
+                    "auto_post": False,
+                    "dry_run": True,
+                    "output": None,
+                    "preview": 5,
+                    "json": True,
+                },
+            )()
+
+            original_fetch_rows = twitter_helper.fetch_search_rows
+            original_fetch_conv = twitter_helper.fetch_conversation_chain
+            original_load_since = twitter_helper.load_query_since_id
+            original_save_since = twitter_helper.save_query_since_id
+
+            def fake_fetch_rows(**kwargs):
+                return (
+                    [
+                        {
+                            "id": "123",
+                            "author_id": "42",
+                            "text": "hello",
+                            "public_metrics": {"like_count": 2, "retweet_count": 0, "reply_count": 0, "quote_count": 0},
+                        }
+                    ],
+                    {"42": "alice"},
+                    {},
+                )
+
+            fake_reply_mod = types.ModuleType("reply_engine.twitter_helper")
+            fake_reply_mod.generate_reply_drafts = lambda author, text, draft_count: ["draft reply"]
+
+            twitter_helper.fetch_search_rows = fake_fetch_rows
+            twitter_helper.fetch_conversation_chain = lambda bearer, tweet_id, max_depth=6: []
+            twitter_helper.load_query_since_id = lambda query, account: None
+            twitter_helper.save_query_since_id = lambda query, account, tweet_id: None
+            original_reply_mod = sys.modules.get("reply_engine.twitter_helper")
+            sys.modules["reply_engine.twitter_helper"] = fake_reply_mod
+            try:
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    rc = twitter_helper.cmd_reply_discover_run(env_path, args)
+            finally:
+                twitter_helper.fetch_search_rows = original_fetch_rows
+                twitter_helper.fetch_conversation_chain = original_fetch_conv
+                twitter_helper.load_query_since_id = original_load_since
+                twitter_helper.save_query_since_id = original_save_since
+                if original_reply_mod is None:
+                    sys.modules.pop("reply_engine.twitter_helper", None)
+                else:
+                    sys.modules["reply_engine.twitter_helper"] = original_reply_mod
+
+        self.assertEqual(rc, 0)
+        self.assertIn('"total_candidates": 1', output.getvalue())
+
+    def test_cmd_post_with_media_attaches_media_id(self) -> None:
+        captured = {}
+        cfg = twitter_helper.Config(
+            client_id="cid",
+            client_secret="secret",
+            access_token="token",
+            refresh_token="refresh",
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "text": "With image",
+                "file": None,
+                "in_reply_to": None,
+                "unique": False,
+                "dry_run": False,
+                "media": "https://example.com/image.png",
+                "alt_text": "chart image",
+            },
+        )()
+
+        def fake_post_with_retry(cfg, env_path, env_values, text, reply_to_id=None, media_ids=None):
+            captured["media_ids"] = media_ids
+            return cfg, (201, {"data": {"id": "tweet999"}})
+
+        original_ensure_auth = twitter_helper.ensure_auth
+        original_upload_media = twitter_helper.upload_media
+        original_post_with_retry = twitter_helper.post_with_retry
+        original_verify_post_visible = twitter_helper.verify_post_visible
+        twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
+        twitter_helper.upload_media = lambda access_token, media_input, alt_text=None: "media123"
+        twitter_helper.post_with_retry = fake_post_with_retry
+        twitter_helper.verify_post_visible = lambda cfg, tweet_id, attempts=3, delay_seconds=1.0: (
+            "",
+            f"https://x.com/i/web/status/{tweet_id}",
+        )
+        try:
+            rc = twitter_helper.cmd_post(cfg, Path("."), {}, args)
+        finally:
+            twitter_helper.ensure_auth = original_ensure_auth
+            twitter_helper.upload_media = original_upload_media
+            twitter_helper.post_with_retry = original_post_with_retry
+            twitter_helper.verify_post_visible = original_verify_post_visible
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["media_ids"], ["media123"])
 
 
 if __name__ == "__main__":

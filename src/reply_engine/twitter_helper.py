@@ -21,6 +21,8 @@ except Exception:  # optional dependency fallback
 
 
 TWEET_ID_RE = re.compile(r"(?:status/)?(\d{10,30})")
+CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def extract_tweet_id(tweet: str) -> str:
@@ -68,6 +70,28 @@ def _required_env() -> Dict[str, Optional[str]]:
         "TWITTER_ACCESS_TOKEN": os.getenv("TWITTER_ACCESS_TOKEN"),
         "TWITTER_ACCESS_SECRET": os.getenv("TWITTER_ACCESS_SECRET"),
     }
+
+
+def _account_name() -> str:
+    return os.getenv("OPENCLAW_TWITTER_ACCOUNT", "default")
+
+
+def _last_mention_path(account: Optional[str] = None) -> Path:
+    acct = account or _account_name()
+    return CONFIG_DIR / f"last_mention_id_{acct}.txt"
+
+
+def load_last_mention_id(account: Optional[str] = None) -> Optional[str]:
+    path = _last_mention_path(account)
+    if not path.exists():
+        return None
+    raw = path.read_text(encoding="utf-8").strip()
+    return raw or None
+
+
+def save_last_mention_id(tweet_id: str, account: Optional[str] = None) -> None:
+    path = _last_mention_path(account)
+    path.write_text(str(tweet_id).strip(), encoding="utf-8")
 
 
 def build_client(require_write: bool = True) -> Any:
@@ -267,6 +291,123 @@ def _load_logged_tweet_ids(log_path: Path) -> Set[str]:
 
 
 def fetch_mentions(client: Any, handle: str, limit: int = 20) -> List[Dict[str, Any]]:
+    return fetch_mentions_native(client=client, handle=handle, limit=limit)
+
+
+def fetch_mentions_native(
+    client: Any,
+    handle: str,
+    limit: int = 20,
+    since_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    clean = handle.lstrip("@")
+    max_results = max(10, min(limit, 100))
+    remaining = max(1, limit)
+    next_token: Optional[str] = None
+    items: List[Dict[str, Any]] = []
+
+    me = client.get_me(user_fields=["id", "username"])
+    user_id = str(getattr(getattr(me, "data", None), "id", "")).strip()
+    me_username = str(getattr(getattr(me, "data", None), "username", "")).strip()
+    if not user_id:
+        # Fallback when get_me is unavailable in token context.
+        lookup = client.get_user(username=clean, user_fields=["id", "username"])
+        user_id = str(getattr(getattr(lookup, "data", None), "id", "")).strip()
+        if not user_id:
+            raise RuntimeError(f"Unable to resolve user id for @{clean}")
+    if me_username and me_username.lower() != clean.lower():
+        # Keep handle output consistent, but do not hard-fail.
+        clean = me_username
+
+    while remaining > 0:
+        page_size = min(max_results, remaining)
+        resp = client.get_users_mentions(
+            id=user_id,
+            max_results=page_size,
+            since_id=since_id,
+            pagination_token=next_token,
+            expansions=["author_id"],
+            tweet_fields=["created_at", "public_metrics", "text", "conversation_id"],
+            user_fields=["username", "name"],
+        )
+        if not resp or not getattr(resp, "data", None):
+            break
+
+        users = {u.id: u for u in (resp.includes.get("users", []) if resp.includes else [])}
+        for t in resp.data:
+            author = users.get(t.author_id)
+            author_username = getattr(author, "username", "unknown")
+            items.append(
+                {
+                    "tweet_id": str(t.id),
+                    "author": author_username,
+                    "text": t.text,
+                    "created_at": str(getattr(t, "created_at", "")),
+                    "metrics": getattr(t, "public_metrics", {}) or {},
+                    "conversation_id": str(getattr(t, "conversation_id", "")),
+                    "url": f"https://x.com/{author_username}/status/{t.id}",
+                }
+            )
+
+        remaining = max(0, limit - len(items))
+        meta = getattr(resp, "meta", None) or {}
+        token = meta.get("next_token") if isinstance(meta, dict) else None
+        next_token = str(token) if token else None
+        if not next_token:
+            break
+
+    return items[:limit]
+
+
+def get_full_conversation(
+    client: Any,
+    tweet_id: str,
+    max_depth: int = 8,
+) -> Dict[str, Any]:
+    chain: List[Dict[str, Any]] = []
+    current_id = str(tweet_id)
+    seen: Set[str] = set()
+    depth = 0
+
+    while current_id and current_id not in seen and depth < max_depth:
+        seen.add(current_id)
+        res = client.get_tweet(
+            id=current_id,
+            expansions=["author_id"],
+            tweet_fields=["created_at", "text", "conversation_id", "author_id", "referenced_tweets"],
+            user_fields=["username", "name"],
+        )
+        if not res or not getattr(res, "data", None):
+            break
+
+        users = {u.id: u for u in (res.includes.get("users", []) if res.includes else [])}
+        t = res.data
+        author = users.get(getattr(t, "author_id", None))
+        row = {
+            "tweet_id": str(getattr(t, "id", "")),
+            "author": getattr(author, "username", "unknown"),
+            "text": str(getattr(t, "text", "")),
+            "created_at": str(getattr(t, "created_at", "")),
+            "conversation_id": str(getattr(t, "conversation_id", "")),
+        }
+        chain.append(row)
+
+        refs = getattr(t, "referenced_tweets", None) or []
+        next_id = None
+        for ref in refs:
+            if getattr(ref, "type", "") == "replied_to":
+                next_id = str(getattr(ref, "id", "")).strip() or None
+                break
+        current_id = next_id or ""
+        depth += 1
+
+    chain.reverse()  # oldest -> newest
+    main = chain[-1] if chain else None
+    parents = chain[:-1] if len(chain) > 1 else []
+    return {"main": main, "parents": parents}
+
+
+def fetch_mentions_search_fallback(client: Any, handle: str, limit: int = 20) -> List[Dict[str, Any]]:
     clean = handle.lstrip("@")
     query = f"to:{clean} -is:retweet -from:{clean}"
     res = client.search_recent_tweets(
@@ -283,15 +424,16 @@ def fetch_mentions(client: Any, handle: str, limit: int = 20) -> List[Dict[str, 
     items: List[Dict[str, Any]] = []
     for t in res.data[:limit]:
         author = users.get(t.author_id)
+        author_username = getattr(author, "username", "unknown")
         items.append(
             {
                 "tweet_id": str(t.id),
-                "author": getattr(author, "username", "unknown"),
+                "author": author_username,
                 "text": t.text,
                 "created_at": str(getattr(t, "created_at", "")),
                 "metrics": getattr(t, "public_metrics", {}) or {},
                 "conversation_id": str(getattr(t, "conversation_id", "")),
-                "url": f"https://twitter.com/{getattr(author, 'username', 'i')}/status/{t.id}",
+                "url": f"https://x.com/{author_username}/status/{t.id}",
             }
         )
     return items
@@ -358,6 +500,7 @@ def run_twitter_helper(
 def run_mentions_workflow(
     handle: str = "OpenClawAI",
     mention_limit: int = 20,
+    since_id: Optional[str] = None,
     draft_count: int = 5,
     pick: int = 1,
     post: bool = False,
@@ -369,18 +512,36 @@ def run_mentions_workflow(
     report_file = Path(report_path)
 
     client = build_client(require_write=post)
-    mentions = fetch_mentions(client=client, handle=handle, limit=mention_limit)
+    effective_since_id = since_id or load_last_mention_id()
+    source = "native_mentions"
+    try:
+        mentions = fetch_mentions_native(
+            client=client,
+            handle=handle,
+            limit=mention_limit,
+            since_id=effective_since_id,
+        )
+    except Exception:
+        source = "search_fallback"
+        mentions = fetch_mentions_search_fallback(client=client, handle=handle, limit=mention_limit)
     auth_username = get_authenticated_username(client) or handle.lstrip("@")
     logged_ids = _load_logged_tweet_ids(log_file)
 
     results: List[Dict[str, Any]] = []
     posted = 0
     pick_idx = max(1, pick) - 1
+    max_seen_id: Optional[str] = None
     for item in mentions:
         tweet_id = item["tweet_id"]
+        try:
+            conv = get_full_conversation(client=client, tweet_id=tweet_id)
+            context_lines = [x.get("text", "").strip() for x in conv.get("parents", []) if x.get("text")]
+            context_text = "\n".join(context_lines[-5:]).strip()
+        except Exception:
+            context_text = ""
         drafts = generate_reply_drafts(
             author=item["author"],
-            text=item["text"],
+            text=f"{item['text']}\n\nThread context:\n{context_text}" if context_text else item["text"],
             draft_count=max(1, draft_count),
         )
         chosen_idx = min(pick_idx, len(drafts) - 1)
@@ -391,6 +552,7 @@ def run_mentions_workflow(
             "tweet_url": item["url"],
             "author": item["author"],
             "tweet_text": item["text"],
+            "thread_context": context_text,
             "drafts": drafts,
             "picked_index": chosen_idx + 1,
             "picked_text": chosen,
@@ -428,10 +590,19 @@ def run_mentions_workflow(
             posted += 1
 
         results.append(row)
+        if tweet_id.isdigit():
+            if max_seen_id is None or int(tweet_id) > int(max_seen_id):
+                max_seen_id = tweet_id
+
+    if max_seen_id:
+        save_last_mention_id(max_seen_id)
 
     report = {
         "handle": handle,
         "mention_limit": mention_limit,
+        "since_id": effective_since_id,
+        "next_since_id": max_seen_id,
+        "source": source,
         "draft_count": draft_count,
         "pick": pick,
         "post": post,
