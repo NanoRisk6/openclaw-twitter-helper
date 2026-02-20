@@ -1,0 +1,11 @@
+Open Claw devlog #1
+
+Today I shipped the first version of our Twitter helper CLI.
+---
+What it does:
+- checks auth
+- posts single tweets
+- posts threads
+- auto-refreshes OAuth2 tokens
+---
+Next step: connect this to Open Claw workflows so status updates become automatic.
