@@ -67,6 +67,7 @@ Dedicated reply engine tool:
 ## Open Claw Docs
 
 - Operations guide: `docs/OPENCLAW_OPERATIONS.md`
+- Reply engine guide: `docs/REPLY_ENGINE.md`
 - Wizard flow: `docs/wizard-flow.md`
 - Update log: `docs/OPENCLAW_UPDATE_LOG.md`
 
