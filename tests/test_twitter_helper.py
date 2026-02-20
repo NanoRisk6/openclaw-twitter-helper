@@ -669,6 +669,7 @@ class PostSanitizeTests(unittest.TestCase):
                 "text": "Reply text",
                 "file": None,
                 "in_reply_to": "12345",
+                "force_reply_target": False,
                 "unique": False,
                 "dry_run": False,
                 "media": None,
@@ -690,9 +691,11 @@ class PostSanitizeTests(unittest.TestCase):
 
         original_ensure_auth = twitter_helper.ensure_auth
         original_fetch_tweet = twitter_helper.fetch_tweet
+        original_has_replied = twitter_helper.has_replied_to_target
         original_post_with_retry = twitter_helper.post_with_retry
         original_verify_post_visible = twitter_helper.verify_post_visible
         twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
+        twitter_helper.has_replied_to_target = lambda target_id: False
         twitter_helper.fetch_tweet = lambda cfg, tweet_id: (200, {"data": {"id": tweet_id}})
         twitter_helper.post_with_retry = fake_post_with_retry
         twitter_helper.verify_post_visible = lambda cfg, tweet_id, attempts=3, delay_seconds=1.0: (
@@ -704,11 +707,45 @@ class PostSanitizeTests(unittest.TestCase):
         finally:
             twitter_helper.ensure_auth = original_ensure_auth
             twitter_helper.fetch_tweet = original_fetch_tweet
+            twitter_helper.has_replied_to_target = original_has_replied
             twitter_helper.post_with_retry = original_post_with_retry
             twitter_helper.verify_post_visible = original_verify_post_visible
 
         self.assertEqual(rc, 0)
         self.assertTrue(captured["unique_on_duplicate"])
+
+    def test_cmd_post_reply_blocks_double_reply_without_force(self) -> None:
+        cfg = twitter_helper.Config(
+            client_id="cid",
+            client_secret="secret",
+            access_token="token",
+            refresh_token="refresh",
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "text": "Reply text",
+                "file": None,
+                "in_reply_to": "12345",
+                "force_reply_target": False,
+                "unique": False,
+                "dry_run": False,
+                "media": None,
+                "alt_text": None,
+            },
+        )()
+
+        original_ensure_auth = twitter_helper.ensure_auth
+        original_has_replied = twitter_helper.has_replied_to_target
+        twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
+        twitter_helper.has_replied_to_target = lambda target_id: True
+        try:
+            with self.assertRaises(twitter_helper.TwitterHelperError):
+                twitter_helper.cmd_post(cfg, Path("."), {}, args)
+        finally:
+            twitter_helper.ensure_auth = original_ensure_auth
+            twitter_helper.has_replied_to_target = original_has_replied
 
     def test_upload_media_rejects_more_than_max_images(self) -> None:
         with self.assertRaises(twitter_helper.TwitterHelperError):
@@ -740,8 +777,13 @@ class PostSanitizeTests(unittest.TestCase):
                     "Args", (), {"list": False, "approve": [f"q_{qid}"], "dry_run": True, "json": False}
                 )()
                 approve_output = io.StringIO()
-                with contextlib.redirect_stdout(approve_output):
-                    rc_approve = twitter_helper.cmd_reply_approve(Path(td) / ".env", approve_args)
+                original_has_replied = twitter_helper.has_replied_to_target
+                twitter_helper.has_replied_to_target = lambda target_id: False
+                try:
+                    with contextlib.redirect_stdout(approve_output):
+                        rc_approve = twitter_helper.cmd_reply_approve(Path(td) / ".env", approve_args)
+                finally:
+                    twitter_helper.has_replied_to_target = original_has_replied
             finally:
                 twitter_helper.APPROVAL_DIR = original_dir
 

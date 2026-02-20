@@ -1281,6 +1281,73 @@ def save_for_approval(item: Dict[str, object]) -> str:
     return qid
 
 
+def replied_targets_path(account: Optional[str] = None) -> Path:
+    acct = (account or ACTIVE_ACCOUNT or "default").strip() or "default"
+    return TOKEN_CONFIG_DIR / f"replied_targets_{acct}.json"
+
+
+def load_replied_targets(account: Optional[str] = None) -> Dict[str, Dict[str, str]]:
+    path = replied_targets_path(account)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for target_id, meta in raw.items():
+        tid = str(target_id).strip()
+        if not tid:
+            continue
+        if isinstance(meta, dict):
+            out[tid] = {
+                "reply_id": str(meta.get("reply_id", "")).strip(),
+                "source": str(meta.get("source", "")).strip(),
+                "at": str(meta.get("at", "")).strip(),
+            }
+        else:
+            out[tid] = {"reply_id": "", "source": "", "at": ""}
+    return out
+
+
+def has_replied_to_target(target_id: str, account: Optional[str] = None) -> bool:
+    tid = str(target_id).strip()
+    if not tid:
+        return False
+    return tid in load_replied_targets(account)
+
+
+def mark_replied_target(
+    target_id: str,
+    reply_id: str,
+    source: str,
+    account: Optional[str] = None,
+) -> None:
+    tid = str(target_id).strip()
+    rid = str(reply_id).strip()
+    if not tid or not rid:
+        return
+    rows = load_replied_targets(account)
+    rows[tid] = {
+        "reply_id": rid,
+        "source": str(source).strip(),
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = replied_targets_path(account)
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def queued_target_ids() -> Set[str]:
+    out: Set[str] = set()
+    for row in list_approval_queue():
+        tid = str(row.get("in_reply_to", "")).strip()
+        if tid:
+            out.add(tid)
+    return out
+
+
 def load_persona_text() -> str:
     if PERSONA_FILE.exists():
         text = PERSONA_FILE.read_text(encoding="utf-8").strip()
@@ -1475,6 +1542,7 @@ def cmd_reply_approve(env_path: Path, args: argparse.Namespace) -> int:
         wanted.add(x)
 
     posted = 0
+    skipped_already_replied = 0
     for row in queue:
         qid = str(row.get("id", "")).strip()
         if qid not in wanted:
@@ -1483,6 +1551,13 @@ def cmd_reply_approve(env_path: Path, args: argparse.Namespace) -> int:
         reply_to = str(row.get("in_reply_to", "")).strip() or None
         if not text:
             print(f"[WARN] q_{qid} missing text, skipping")
+            continue
+        if reply_to and has_replied_to_target(reply_to):
+            print(f"[SKIP] q_{qid}: already replied to target {reply_to}; removing from queue")
+            path = Path(str(row.get("_path", "")))
+            if path.exists():
+                path.unlink()
+            skipped_already_replied += 1
             continue
         if args.dry_run:
             print(f"dry-run approve q_{qid}: {text[:140]}")
@@ -1505,12 +1580,16 @@ def cmd_reply_approve(env_path: Path, args: argparse.Namespace) -> int:
         if posted_id:
             _, posted_url = verify_post_visible(fresh, posted_id)
             print(f"Posted q_{qid}: {posted_url}")
+            if reply_to:
+                mark_replied_target(reply_to, posted_id, source="reply-approve")
         path = Path(str(row.get("_path", "")))
         if path.exists():
             path.unlink()
         posted += 1
 
     print(f"Approved and posted: {posted}")
+    if skipped_already_replied:
+        print(f"Skipped as already-replied targets: {skipped_already_replied}")
     return 0
 
 
@@ -1643,8 +1722,12 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
     total_seen = 0
     total_candidates = 0
     total_posted = 0
+    total_skipped_already_replied = 0
+    total_skipped_already_queued = 0
     per_query_results: List[Dict[str, object]] = []
     persona_text = load_persona_text()
+    replied_targets = load_replied_targets(ACTIVE_ACCOUNT)
+    queued_targets = queued_target_ids() if approval_queue_enabled else set()
 
     for query in queries:
         effective_since = args.since_id or load_query_since_id(query, ACTIVE_ACCOUNT)
@@ -1669,6 +1752,28 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
 
             score = score_tweet_for_discovery(row)
             if score < args.min_score:
+                continue
+            if tid in replied_targets:
+                total_skipped_already_replied += 1
+                query_rows.append(
+                    {
+                        "tweet_id": tid,
+                        "author": users.get(str(row.get("author_id", "")), "unknown"),
+                        "score": score,
+                        "action": "skipped_already_replied",
+                    }
+                )
+                continue
+            if approval_queue_enabled and tid in queued_targets:
+                total_skipped_already_queued += 1
+                query_rows.append(
+                    {
+                        "tweet_id": tid,
+                        "author": users.get(str(row.get("author_id", "")), "unknown"),
+                        "score": score,
+                        "action": "skipped_already_queued",
+                    }
+                )
                 continue
             total_candidates += 1
             aid = str(row.get("author_id", ""))
@@ -1729,6 +1834,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                 record_recent_reply(draft, tid)
                 item["action"] = "queued"
                 item["queue_id"] = f"q_{qid}"
+                queued_targets.add(tid)
             elif post_enabled and cfg is not None and draft and confidence >= args.min_confidence:
                 fresh, (status, body) = post_with_retry(
                     cfg,
@@ -1749,6 +1855,12 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                         item["action"] = "posted"
                         item["posted_tweet_id"] = posted_id
                         item["posted_url"] = posted_url
+                        mark_replied_target(tid, posted_id, source="reply-discover-run")
+                        replied_targets[tid] = {
+                            "reply_id": posted_id,
+                            "source": "reply-discover-run",
+                            "at": "",
+                        }
                         record_recent_reply(draft, tid)
                         total_posted += 1
             query_rows.append(item)
@@ -1778,6 +1890,8 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
         "total_seen": total_seen,
         "total_candidates": total_candidates,
         "total_posted": total_posted,
+        "total_skipped_already_replied": total_skipped_already_replied,
+        "total_skipped_already_queued": total_skipped_already_queued,
         "results": per_query_results,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -1792,7 +1906,11 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
         return 0
 
     print(f"Queries: {len(queries)}")
-    print(f"Seen: {total_seen} | candidates: {total_candidates} | posted: {total_posted}")
+    print(
+        "Seen: "
+        f"{total_seen} | candidates: {total_candidates} | posted: {total_posted} | "
+        f"skip_replied: {total_skipped_already_replied} | skip_queued: {total_skipped_already_queued}"
+    )
     for q in per_query_results:
         print(f"- {q['query']}")
         rows = q.get("results", [])
@@ -2857,6 +2975,11 @@ def cmd_post(
         )
 
     if args.in_reply_to:
+        if has_replied_to_target(args.in_reply_to) and not getattr(args, "force_reply_target", False):
+            raise TwitterHelperError(
+                "Refusing to double-reply to this target. "
+                "Use --force-reply-target to override intentionally."
+            )
         check_status, check_body = fetch_tweet(fresh, args.in_reply_to)
         if check_status >= 400:
             raise TwitterHelperError(
@@ -2889,6 +3012,8 @@ def cmd_post(
     if not tweet_id:
         raise TwitterHelperError("Post returned no tweet id.")
     _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+    if args.in_reply_to:
+        mark_replied_target(str(args.in_reply_to), str(tweet_id), source="post")
     print(f"Tweet posted and verified: id={tweet_id}")
     print(f"URL: {tweet_url}")
     return 0
@@ -3021,6 +3146,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_post.add_argument(
         "--in-reply-to",
         help="Optional tweet ID to post as a reply",
+    )
+    p_post.add_argument(
+        "--force-reply-target",
+        action="store_true",
+        help="Override double-reply guard for --in-reply-to target",
     )
     p_post.add_argument(
         "--media",
