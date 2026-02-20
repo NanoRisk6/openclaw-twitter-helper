@@ -1,6 +1,10 @@
 #!/bin/zsh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PY_BIN="python3"
+if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+  PY_BIN="$SCRIPT_DIR/.venv/bin/python"
+fi
 GLOBAL_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,21 +32,21 @@ FIRST_ARG="${1:-}"
 case "$FIRST_ARG" in
   restart|recover|fix|reboot)
     shift || true
-    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" restart-setup "$@"
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" restart-setup "$@"
     ;;
   diagnose|auto-diagnose|claude-diagnose)
     shift || true
-    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" auto-diagnose "$@"
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" auto-diagnose "$@"
     ;;
 esac
 
 # If caller passed a real subcommand, forward directly.
 case "$FIRST_ARG" in
-  setup|auth-login|doctor|auto-diagnose|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper|restart-setup|browse-twitter|mentions|search|inspire-tweets|reply-discover|reply-rank|reply-ideas|reply-run|reply-discover-run|reply-approve|reply-twitter-helper|reply-twitter-e2e)
-    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" "$@"
+  setup|auth-login|doctor|auto-diagnose|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper|seamless|restart-setup|browse-twitter|mentions|search|inspire-tweets|reply-discover|reply-rank|reply-ideas|reply-run|reply-discover-run|reply-approve|reply-twitter-helper|reply-twitter-e2e|reply-quick)
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" "$@"
     ;;
   *)
     # Otherwise use the one-command workflow by default.
-    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" run-twitter-helper "$@"
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" run-twitter-helper "$@"
     ;;
 esac

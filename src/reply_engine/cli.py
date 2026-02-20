@@ -16,6 +16,7 @@ from .twitter_helper import (
     approve_queue,
     cleanup_queue,
     DEFAULT_REPLY_MODES,
+    doctor_reply_engine,
     list_approval_queue,
     run_reply_many_ways,
     run_discovery_workflow,
@@ -74,12 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     e2e = sub.add_parser("twitter-e2e", help="End-to-end mentions workflow for OpenClaw")
     e2e.add_argument("--handle", default="OpenClawAI", help="target account handle")
-    e2e.add_argument("--mention-limit", type=int, default=20)
+    e2e.add_argument("--mention-limit", type=int, default=1)
     e2e.add_argument("--since-id", default=None, help="Only include mentions newer than this tweet ID")
-    e2e.add_argument("--draft-count", type=int, default=5)
+    e2e.add_argument("--draft-count", type=int, default=1)
     e2e.add_argument("--pick", type=int, default=1, help="1-based draft index")
     e2e.add_argument("--post", action="store_true", help="post replies (default is draft-only)")
-    e2e.add_argument("--max-posts", type=int, default=3, help="max replies to post in one run")
+    e2e.add_argument("--auto-post", action="store_true", help="alias for --post")
+    e2e.add_argument("--max-posts", type=int, default=1, help="max replies to post in one run")
     e2e.add_argument("--approval-queue", action="store_true", help="queue qualified replies instead of posting")
     e2e.add_argument("--min-confidence", type=int, default=70, help="minimum confidence to queue/post")
     e2e.add_argument("--web-enrich", action="store_true", help="enrich draft context with lightweight web snippets")
@@ -89,15 +91,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     d2e = sub.add_parser("twitter-discovery", help="End-to-end discovery workflow with queue/post controls")
     d2e.add_argument("--query", required=True, help="recent search query")
-    d2e.add_argument("--limit", type=int, default=20)
+    d2e.add_argument("--limit", type=int, default=1)
     d2e.add_argument("--since-id", default=None)
-    d2e.add_argument("--draft-count", type=int, default=5)
+    d2e.add_argument("--draft-count", type=int, default=1)
     d2e.add_argument("--pick", type=int, default=1, help="1-based draft index")
     d2e.add_argument("--post", action="store_true", help="post replies")
     d2e.add_argument("--approval-queue", action="store_true", help="queue qualified replies")
     d2e.add_argument("--min-score", type=int, default=20)
     d2e.add_argument("--min-confidence", type=int, default=70)
-    d2e.add_argument("--max-posts", type=int, default=3)
+    d2e.add_argument("--max-posts", type=int, default=1)
     d2e.add_argument("--web-enrich", action="store_true", help="enrich draft context with lightweight web snippets")
     d2e.add_argument("--web-context-items", type=int, default=2, help="max web snippets per candidate")
     d2e.add_argument("--log-path", default="data/replies.jsonl")
@@ -115,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
     qclean = sub.add_parser("queue-clean", help="Remove invalid/duplicate/already-replied queue items")
     qclean.add_argument("--keep-duplicates", action="store_true", help="do not remove duplicate target queue entries")
 
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check queue health, state-file integrity, and OAuth2 posting readiness",
+    )
+    doctor.add_argument("--json", action="store_true", help="print full JSON report")
+    doctor.add_argument("--skip-network", action="store_true", help="skip network auth validation")
+    doctor.add_argument("--env-file", default=".env", help="path to env file")
+    doctor.add_argument("--account", default=None, help="account name override (default: env OPENCLAW_TWITTER_ACCOUNT)")
+
     return p
 
 
@@ -123,7 +134,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command in {"twitter-e2e", "twitter-discovery"}:
-        if args.post and args.approval_queue:
+        if (args.post or getattr(args, "auto_post", False)) and args.approval_queue:
             parser.error("Use either --post or --approval-queue, not both.")
         if args.max_posts is not None and args.max_posts < 1:
             parser.error("--max-posts must be >= 1")
@@ -208,12 +219,14 @@ def main() -> None:
             since_id=args.since_id,
             draft_count=args.draft_count,
             pick=args.pick,
-            post=args.post,
+            post=bool(args.post or getattr(args, "auto_post", False)),
             max_posts=args.max_posts,
             approval_queue=args.approval_queue,
             min_confidence=args.min_confidence,
             web_enrich=args.web_enrich,
             web_context_items=args.web_context_items,
+            fetch_context=False,
+            verify_post=False,
             log_path=args.log_path,
             report_path=args.report_path,
         )
@@ -241,6 +254,8 @@ def main() -> None:
             max_posts=args.max_posts,
             web_enrich=args.web_enrich,
             web_context_items=args.web_context_items,
+            fetch_context=False,
+            verify_post=False,
             log_path=args.log_path,
             report_path=args.report_path,
         )
@@ -288,6 +303,38 @@ def main() -> None:
             f"already_replied: {result['reasons']['already_replied']} | "
             f"duplicate_target: {result['reasons']['duplicate_target']}"
         )
+        return
+
+    if args.command == "doctor":
+        result = doctor_reply_engine(
+            env_file=args.env_file,
+            skip_network=args.skip_network,
+            account=args.account,
+        )
+        if args.json:
+            import json
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            q = result["queue_health"]
+            s = result["state_health"]
+            o = result["oauth2_posting"]
+            print(f"overall: {'ready' if result['overall_ready'] else 'not_ready'}")
+            print(f"account: {result['account']}")
+            print(
+                "queue: "
+                f"count={q['count']} invalid={q['invalid']} "
+                f"duplicate_targets={q['duplicate_targets']} "
+                f"already_replied_targets={q['already_replied_targets']}"
+            )
+            print(
+                "state: "
+                f"replied_invalid={s['replied_log']['invalid']} "
+                f"run_invalid={s['run_log']['invalid']} "
+                f"checkpoint_valid={s['last_mention_checkpoint']['valid']}"
+            )
+            print(f"oauth2: {'ready' if o['ready'] else 'not_ready'} | {o['details']}")
+        if not result["overall_ready"]:
+            raise SystemExit(2)
         return
 
 

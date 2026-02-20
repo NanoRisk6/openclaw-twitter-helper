@@ -62,6 +62,9 @@ Dedicated reply engine tool:
 ./reply-engine twitter-discovery --query "openclaw OR \"local ai\" lang:en -is:retweet min_faves:5" --approval-queue
 ./reply-engine many-ways --tweet "https://x.com/OpenClawAI/status/2024820748980748765"
 ./reply-engine twitter-discovery --query "openclaw OR local ai" --web-enrich --web-context-items 3 --approval-queue
+./reply-engine doctor --skip-network
+./reply-engine doctor --json
+./run-twitter-helper reply-quick --handle OpenClawAI
 ```
 
 ## Open Claw Docs
@@ -70,6 +73,19 @@ Dedicated reply engine tool:
 - Reply engine guide: `docs/REPLY_ENGINE.md`
 - Wizard flow: `docs/wizard-flow.md`
 - Update log: `docs/OPENCLAW_UPDATE_LOG.md`
+
+## Engine Entry Points
+
+```bash
+python src/post_engine.py --help
+python src/reply_engine.py --help
+python src/supply_engine.py --help
+```
+
+- `src/post_engine.py`: setup/auth/doctor/posting workflows
+- `src/reply_engine.py`: reply discovery/queue/doctor workflows
+- `src/supply_engine.py`: alias of reply engine (same commands)
+- `src/twitter_helper.py`: unified full CLI (backward compatible)
 
 
 ## Core Commands
@@ -284,6 +300,7 @@ python -m src.reply_engine.cli twitter-discovery --query "openclaw OR \"local ai
 python -m src.reply_engine.cli queue-list
 python -m src.reply_engine.cli queue-clean
 python -m src.reply_engine.cli queue-approve --ids q_12345678 --dry-run
+python -m src.reply_engine.cli doctor --skip-network
 ```
 
 ## Examples

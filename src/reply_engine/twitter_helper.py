@@ -71,6 +71,7 @@ STOPWORDS = {
     "with",
     "your",
 }
+NUMERIC_TOKEN_RE = re.compile(r"\b\d+(?:[.,]\d+)?%?\b")
 
 
 def extract_tweet_id(tweet: str) -> str:
@@ -190,7 +191,11 @@ def _load_main_helper():
         ) from exc
 
 
-def _post_reply_via_shared_oauth2(tweet_id: str, text: str) -> Dict[str, str]:
+def _post_reply_via_shared_oauth2(
+    tweet_id: str,
+    text: str,
+    verify_visible: bool = True,
+) -> Dict[str, str]:
     main_helper = _load_main_helper()
     env_path = Path(os.getenv("TWITTER_HELPER_ENV_FILE", ".env"))
     cfg, env_values = main_helper.resolve_config(env_path)
@@ -208,7 +213,10 @@ def _post_reply_via_shared_oauth2(tweet_id: str, text: str) -> Dict[str, str]:
     reply_id = str(data.get("id", "")) if isinstance(data, dict) else ""
     if not reply_id:
         raise RuntimeError("OAuth2 post succeeded but returned no reply id")
-    _, url = main_helper.verify_post_visible(fresh, reply_id)
+    if verify_visible:
+        _, url = main_helper.verify_post_visible(fresh, reply_id)
+    else:
+        url = f"https://x.com/i/web/status/{reply_id}"
     return {"reply_id": reply_id, "reply_url": url}
 
 
@@ -237,11 +245,11 @@ def fetch_tweet_context(client: Any, tweet_id: str) -> Dict[str, Any]:
 
 def _templates(author: str, text: str) -> List[str]:
     return [
-        f"Strong point @{author}. Biggest unlock is consistent repetition of one core promise, not chasing new angles every day.",
-        f"Agree with @{author}. Clear positioning compounds faster than clever copy. One message, many formats, tracked weekly.",
-        f"This stands out because it is operational, not just motivational. Teams that turn this into a repeatable system usually win.",
-        f"Underrated growth lever: say the same core thing 100 ways instead of 100 different things once.",
-        f"Great post @{author}. Curious which channel is converting best right now: organic, creators, or paid?",
+        f"@{author} This lands. I keep noticing progress compounds when we stay with one honest signal long enough to learn from it.",
+        f"@{author} I like this framing. It reminds me that clarity beats noise when building in public.",
+        f"@{author} This feels practical, not performative. That difference is where most momentum seems to come from.",
+        f"@{author} I’ve been reflecting on this too: consistency is less about repetition and more about direction.",
+        f"@{author} This is a useful prompt. What changed for you once this clicked in real execution?",
     ]
 
 
@@ -258,13 +266,16 @@ def _openai_drafts(author: str, text: str, n: int) -> Optional[List[str]]:
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     client = OpenAI(api_key=api_key)
     prompt = (
-        "Generate concise Twitter reply drafts for OpenClawAI. "
+        "Generate concise but creative Twitter reply drafts for OpenClawAI. "
         "Return plain JSON array of strings only. "
-        "Each draft must be <= 240 characters and specific. "
+        "Each draft must be <= 240 characters, specific to the tweet, and non-generic. "
+        "Avoid repetitive boilerplate phrasing. "
+        "You may include first-person reflective language when it feels natural and relevant. "
+        "Do not invent facts, numbers, percentages, timelines, or claims that are not in the source tweet/context. "
         f"Create {n} replies to this tweet by @{author}: {text}"
     )
 
-    res = client.responses.create(model=model, input=prompt, temperature=0.7)
+    res = client.responses.create(model=model, input=prompt, temperature=0.95)
     raw = res.output_text.strip()
     try:
         parsed = json.loads(raw)
@@ -290,12 +301,15 @@ def _openai_mode_drafts(author: str, text: str, modes: List[str]) -> Optional[Di
     client = OpenAI(api_key=api_key)
     modes_csv = ", ".join(modes)
     prompt = (
-        "Create one concise Twitter reply per requested mode for OpenClawAI. "
+        "Create one concise but creative Twitter reply per requested mode for OpenClawAI. "
         "Each reply must stay on-topic, reference concrete tweet details, and be <= 240 chars. "
+        "Avoid generic boilerplate openers and repetitive phrasing across modes. "
+        "Reflective and introspective voice is allowed when context supports it. "
+        "Do not invent facts, numbers, percentages, timelines, or claims absent from source text. "
         "Return JSON object mapping mode->reply text only. "
         f"Author: @{author}\nTweet: {text}\nModes: {modes_csv}"
     )
-    res = client.responses.create(model=model, input=prompt, temperature=0.8)
+    res = client.responses.create(model=model, input=prompt, temperature=1.0)
     raw = (res.output_text or "").strip()
     try:
         parsed = json.loads(raw)
@@ -315,6 +329,15 @@ def _focus_phrase(text: str, words: int = 8) -> str:
     clean = " ".join(str(text).split())
     parts = clean.split(" ")
     return " ".join(parts[: max(3, words)]).strip()
+
+
+def has_ungrounded_numeric_claim(candidate: str, source_text: str) -> bool:
+    cand_tokens = set(NUMERIC_TOKEN_RE.findall(candidate))
+    if not cand_tokens:
+        return False
+    src_tokens = set(NUMERIC_TOKEN_RE.findall(source_text))
+    # Any number/percentage in candidate that is not present in source is treated as ungrounded.
+    return any(tok not in src_tokens for tok in cand_tokens)
 
 
 def _fallback_mode_drafts(author: str, text: str, modes: List[str]) -> Dict[str, str]:
@@ -404,6 +427,30 @@ def fetch_web_context(query_text: str, max_items: int = 3) -> List[str]:
     return snippets[:max_items]
 
 
+def should_web_enrich(text: str, context_text: str = "") -> bool:
+    """Run lightweight web research only when it is likely to add value."""
+    hay = f"{text} {context_text}".lower()
+    if "?" in hay:
+        return True
+    trigger_terms = (
+        "how",
+        "why",
+        "example",
+        "case study",
+        "data",
+        "stat",
+        "brand",
+        "marketing",
+        "strategy",
+        "ai",
+        "agent",
+        "automation",
+        "trust",
+        "repetition",
+    )
+    return any(term in hay for term in trigger_terms)
+
+
 def generate_reply_many_ways(author: str, text: str, modes: List[str]) -> Dict[str, str]:
     clean_modes = [m.strip().lower() for m in modes if m and m.strip()]
     if not clean_modes:
@@ -418,6 +465,11 @@ def generate_reply_drafts(author: str, text: str, draft_count: int) -> List[str]
     llm = _openai_drafts(author=author, text=text, n=draft_count)
     if llm:
         return llm
+
+    # Lean-mode fallback: produce one specific, mention-tied reply instead of a generic template.
+    if draft_count <= 1:
+        focus = _focus_phrase(text, words=10)
+        return [f"@{author} {focus} — best move is one clear action, then iterate from real feedback."]
 
     drafts = _templates(author=author, text=text)
     if draft_count <= len(drafts):
@@ -837,9 +889,14 @@ def run_mentions_workflow(
     min_confidence: int = 70,
     web_enrich: bool = False,
     web_context_items: int = 2,
+    fetch_context: bool = True,
+    verify_post: bool = True,
     log_path: str = "data/replies.jsonl",
     report_path: str = "data/mentions_report.json",
 ) -> Dict[str, Any]:
+    mention_limit = 1
+    draft_count = 1
+    max_posts = 1
     log_file = Path(log_path)
     report_file = Path(report_path)
 
@@ -865,14 +922,16 @@ def run_mentions_workflow(
     max_seen_id: Optional[str] = None
     for item in mentions:
         tweet_id = item["tweet_id"]
-        try:
-            conv = get_full_conversation(client=client, tweet_id=tweet_id)
-            context_lines = [x.get("text", "").strip() for x in conv.get("parents", []) if x.get("text")]
-            context_text = "\n".join(context_lines[-5:]).strip()
-        except Exception:
-            context_text = ""
+        context_text = ""
+        if fetch_context:
+            try:
+                conv = get_full_conversation(client=client, tweet_id=tweet_id)
+                context_lines = [x.get("text", "").strip() for x in conv.get("parents", []) if x.get("text")]
+                context_text = "\n".join(context_lines[-5:]).strip()
+            except Exception:
+                context_text = ""
         web_context: List[str] = []
-        if web_enrich:
+        if web_enrich and should_web_enrich(item["text"], context_text):
             web_context = fetch_web_context(item["text"], max_items=max(1, web_context_items))
         enriched_text = item["text"]
         if context_text:
@@ -886,6 +945,12 @@ def run_mentions_workflow(
         )
         chosen_idx = min(pick_idx, len(drafts) - 1)
         chosen = drafts[chosen_idx]
+        source_for_accuracy = f"{item['text']}\n{context_text}"
+        if has_ungrounded_numeric_claim(chosen, source_for_accuracy):
+            safe_focus = _focus_phrase(item["text"], words=10)
+            chosen = (
+                f"@{item['author']} {safe_focus} — I’m curious what signal mattered most in your experience."
+            )
 
         row = {
             "tweet_id": tweet_id,
@@ -928,7 +993,11 @@ def run_mentions_workflow(
             row["queue_id"] = f"q_{qid}"
             queued += 1
         elif post and posted < max_posts:
-            posted_reply = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=chosen)
+            posted_reply = _post_reply_via_shared_oauth2(
+                tweet_id=tweet_id,
+                text=chosen,
+                verify_visible=verify_post,
+            )
             reply_id = posted_reply["reply_id"]
             reply_url = posted_reply["reply_url"]
             row["status"] = "posted"
@@ -1003,9 +1072,14 @@ def run_discovery_workflow(
     max_posts: int = 3,
     web_enrich: bool = False,
     web_context_items: int = 2,
+    fetch_context: bool = True,
+    verify_post: bool = True,
     log_path: str = "data/replies.jsonl",
     report_path: str = "data/discovery_report.json",
 ) -> Dict[str, Any]:
+    limit = 1
+    draft_count = 1
+    max_posts = 1
     log_file = Path(log_path)
     report_file = Path(report_path)
     client = build_client()
@@ -1045,11 +1119,13 @@ def run_discovery_workflow(
             results.append(row)
             continue
 
-        context = get_full_conversation(client=client, tweet_id=tweet_id)
-        context_lines = [x.get("text", "").strip() for x in context.get("parents", []) if x.get("text")]
-        context_text = "\n".join(context_lines[-5:]).strip()
+        context_text = ""
+        if fetch_context:
+            context = get_full_conversation(client=client, tweet_id=tweet_id)
+            context_lines = [x.get("text", "").strip() for x in context.get("parents", []) if x.get("text")]
+            context_text = "\n".join(context_lines[-5:]).strip()
         web_context: List[str] = []
-        if web_enrich:
+        if web_enrich and should_web_enrich(item["text"], context_text):
             web_context = fetch_web_context(item["text"], max_items=max(1, web_context_items))
         enriched_text = item["text"]
         if context_text:
@@ -1063,6 +1139,12 @@ def run_discovery_workflow(
         )
         chosen_idx = min(pick_idx, len(drafts) - 1)
         chosen = drafts[chosen_idx]
+        source_for_accuracy = f"{item['text']}\n{context_text}"
+        if has_ungrounded_numeric_claim(chosen, source_for_accuracy):
+            safe_focus = _focus_phrase(item["text"], words=10)
+            chosen = (
+                f"@{item['author']} {safe_focus} — I’m curious what signal mattered most in your experience."
+            )
         confidence = max(45, min(95, 50 + int(score / 8)))
         row["drafts"] = drafts
         row["picked_index"] = chosen_idx + 1
@@ -1099,7 +1181,11 @@ def run_discovery_workflow(
             continue
 
         if post and posted < max_posts:
-            posted_reply = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=chosen)
+            posted_reply = _post_reply_via_shared_oauth2(
+                tweet_id=tweet_id,
+                text=chosen,
+                verify_visible=verify_post,
+            )
             reply_id = posted_reply["reply_id"]
             reply_url = posted_reply["reply_url"]
             row["status"] = "posted"
@@ -1205,7 +1291,7 @@ def approve_queue(
             skipped += 1
             out_rows.append(res)
             continue
-        posted_reply = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=text)
+        posted_reply = _post_reply_via_shared_oauth2(tweet_id=tweet_id, text=text, verify_visible=True)
         reply_id = posted_reply["reply_id"]
         reply_url = posted_reply["reply_url"]
         log_reply(
@@ -1244,3 +1330,107 @@ def approve_queue(
         },
     )
     return result
+
+
+def _jsonl_integrity(path: Path) -> Dict[str, int]:
+    stats = {"lines": 0, "invalid": 0}
+    if not path.exists():
+        return stats
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        stats["lines"] += 1
+        try:
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                stats["invalid"] += 1
+        except json.JSONDecodeError:
+            stats["invalid"] += 1
+    return stats
+
+
+def doctor_reply_engine(
+    env_file: str = ".env",
+    skip_network: bool = False,
+    account: Optional[str] = None,
+) -> Dict[str, Any]:
+    if account:
+        os.environ["OPENCLAW_TWITTER_ACCOUNT"] = str(account)
+
+    queue_rows = list_approval_queue()
+    queue_health: Dict[str, Any] = {
+        "count": len(queue_rows),
+        "invalid": 0,
+        "duplicate_targets": 0,
+        "already_replied_targets": 0,
+    }
+    seen_targets: Set[str] = set()
+    for row in queue_rows:
+        tweet_id = str(row.get("tweet_id", "") or row.get("in_reply_to", "")).strip()
+        text = str(row.get("text", "")).strip()
+        if not tweet_id or not text:
+            queue_health["invalid"] += 1
+            continue
+        if tweet_id in seen_targets:
+            queue_health["duplicate_targets"] += 1
+        else:
+            seen_targets.add(tweet_id)
+        if has_replied_to(tweet_id):
+            queue_health["already_replied_targets"] += 1
+
+    state_health: Dict[str, Any] = {}
+    acct = _account_name()
+    replied_log = _replied_log_path(acct)
+    run_log = RUN_LOG
+    last_mention = _last_mention_path(acct)
+    state_health["replied_log"] = {"path": str(replied_log), **_jsonl_integrity(replied_log)}
+    state_health["run_log"] = {"path": str(run_log), **_jsonl_integrity(run_log)}
+    last_value = ""
+    last_valid = True
+    if last_mention.exists():
+        last_value = last_mention.read_text(encoding="utf-8").strip()
+        last_valid = (not last_value) or last_value.isdigit()
+    state_health["last_mention_checkpoint"] = {
+        "path": str(last_mention),
+        "exists": last_mention.exists(),
+        "value": last_value,
+        "valid": last_valid,
+    }
+
+    oauth2: Dict[str, Any] = {"ready": False, "skip_network": bool(skip_network), "details": ""}
+    try:
+        main_helper = _load_main_helper()
+        env_path = Path(env_file)
+        cfg, env_values = main_helper.resolve_config(env_path)
+        if skip_network:
+            oauth2["ready"] = True
+            oauth2["details"] = "Shared OAuth2 config resolved (network skipped)."
+        else:
+            fresh = main_helper.ensure_auth(cfg, env_path, env_values)
+            status, body = main_helper.me(fresh)
+            if status == 200:
+                data = body.get("data") if isinstance(body, dict) else None
+                username = data.get("username") if isinstance(data, dict) else None
+                oauth2["ready"] = True
+                oauth2["details"] = f"Authenticated as @{username}" if username else "Authenticated"
+            else:
+                oauth2["details"] = f"Auth check failed with status {status}"
+    except Exception as exc:
+        oauth2["details"] = str(exc)
+
+    overall_ready = (
+        oauth2["ready"]
+        and queue_health["invalid"] == 0
+        and state_health["replied_log"]["invalid"] == 0
+        and state_health["run_log"]["invalid"] == 0
+        and state_health["last_mention_checkpoint"]["valid"]
+    )
+    return {
+        "overall_ready": overall_ready,
+        "account": acct,
+        "queue_health": queue_health,
+        "state_health": state_health,
+        "oauth2_posting": oauth2,
+        "timestamp": datetime.now().isoformat(),
+    }

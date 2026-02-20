@@ -87,6 +87,19 @@ Useful flags:
 ./reply-engine many-ways --tweet "2024820748980748765" --modes direct,curious,technical --json
 ```
 
+### 5) Reply-engine doctor (health + readiness)
+
+```bash
+./reply-engine doctor
+./reply-engine doctor --skip-network
+./reply-engine doctor --json
+```
+
+Checks in one command:
+- Queue health (invalid entries, duplicate targets, already-replied targets)
+- State-file integrity (`replied_to_*.jsonl`, `reply_engine_runs.jsonl`, mention checkpoint format)
+- OAuth2 posting readiness via shared helper auth path
+
 ## Dedupe + State Files
 
 - Replied log: `~/.config/openclaw-twitter-helper/replied_to_<account>.jsonl`

@@ -8,6 +8,7 @@ import math
 import mimetypes
 import os
 import re
+import random
 import secrets
 import sys
 import tempfile
@@ -45,6 +46,7 @@ USER_ID_CACHE_TTL_SECONDS = 86400
 APPROVAL_DIR = TOKEN_CONFIG_DIR / "approval_queue"
 APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
 RECENT_REPLIES_CACHE = TOKEN_CONFIG_DIR / "recent_replies.jsonl"
+RECENT_POSTS_CACHE = TOKEN_CONFIG_DIR / "recent_posts.jsonl"
 PERSONA_FILE = TOKEN_CONFIG_DIR / "persona" / "openclaw.md"
 REPLIED_DEDUPE_DAYS = 90
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -80,6 +82,11 @@ CORPORATE_TONE_TERMS = (
     "stakeholder",
 )
 
+
+def creative_mode_enabled() -> bool:
+    raw = str(os.getenv("OPENCLAW_CREATIVE_MODE", "1")).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
     "TWITTER_CLIENT_SECRET",
@@ -90,14 +97,6 @@ CONFIG_KEYS = [
     "TWITTER_WEBSITE_URL",
     "TWITTER_SCOPES",
 ]
-
-REPLY_POST_KEYS = [
-    "TWITTER_API_KEY",
-    "TWITTER_API_SECRET",
-    "TWITTER_ACCESS_TOKEN",
-    "TWITTER_ACCESS_SECRET",
-]
-
 
 @dataclass
 class Config:
@@ -763,6 +762,96 @@ def make_unique_public_tweet(base_text: str) -> str:
     return base + suffix
 
 
+def _post_prefix_key(text: str) -> str:
+    return sanitize_public_text(text).lower()[:80]
+
+
+def load_recent_post_prefixes(hours: int = 24) -> Set[str]:
+    cutoff = time.time() - max(1, hours) * 3600
+    out: Set[str] = set()
+    if not RECENT_POSTS_CACHE.exists():
+        return out
+    for line in RECENT_POSTS_CACHE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        ts_raw = str(row.get("ts", "")).strip()
+        text_raw = str(row.get("text", "")).strip()
+        if not ts_raw or not text_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_raw).timestamp()
+        except ValueError:
+            continue
+        if ts >= cutoff:
+            out.add(_post_prefix_key(text_raw))
+    return out
+
+
+def record_recent_post(text: str) -> None:
+    RECENT_POSTS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "text": sanitize_public_text(text),
+        "account": ACTIVE_ACCOUNT,
+    }
+    with RECENT_POSTS_CACHE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def generate_reflective_post_text() -> str:
+    reflections = [
+        "Hot take: most autonomous workflows fail from noisy decision boundaries, not model quality.",
+        "Counterintuitive lesson: shipping less often but with tighter feedback loops outperforms nonstop posting.",
+        "I keep seeing this pattern: the best local-agent stacks are boring, observable, and brutally simple.",
+        "Today’s reflection: autonomy starts compounding only after you remove the fragile branch everyone ignores.",
+    ]
+    build_logs = [
+        "Just removed one brittle step from the loop and latency dropped. Tiny fix, outsized effect.",
+        "Build note: one guardrail + one metric beats five clever prompts every time.",
+        "Cut one noisy branch in the pipeline and reply quality jumped immediately.",
+        "Shipped a reliability patch today: fewer moving parts, fewer hallucinated outcomes.",
+    ]
+    questions = [
+        "What’s your highest-leverage automation fix this week: latency, quality, or reliability?",
+        "Where does your agent loop still break in production: auth, context, or dedupe?",
+        "If you could harden one part of your stack tonight, what would you pick first?",
+        "What’s one rule that made your autonomous workflow actually trustworthy?",
+    ]
+    takeaways = [
+        "Takeaway: if your loop isn’t observable, it isn’t autonomous yet.",
+        "Takeaway: quality improves fastest when you optimize prompts and process together.",
+        "Takeaway: consistency without relevance is noise; relevance without consistency is luck.",
+        "Takeaway: the fastest path to better outputs is fewer assumptions, more checkpoints.",
+    ]
+
+    candidates = reflections + build_logs + questions + takeaways
+
+    def viral_score(text: str) -> int:
+        score = 0
+        if text.endswith("?"):
+            score += 3
+        if ":" in text:
+            score += 2
+        if any(k in text.lower() for k in ("hot take", "counterintuitive", "takeaway")):
+            score += 2
+        if 110 <= len(text) <= 220:
+            score += 2
+        return score
+
+    recent = load_recent_post_prefixes(hours=24)
+    fresh = [t for t in candidates if _post_prefix_key(t) not in recent]
+    pool = fresh or candidates
+    random.shuffle(pool)
+    return sorted(pool, key=viral_score, reverse=True)[0]
+
+
 def make_unique_reply_tweet(base_text: str) -> str:
     base = sanitize_public_text(base_text)
     if not base:
@@ -917,14 +1006,26 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "reply-twitter-e2e":
+        if bool(getattr(args, "post", False) or getattr(args, "auto_post", False)) and bool(
+            getattr(args, "approval_queue", False)
+        ):
+            raise TwitterHelperError("Use either --post/--auto-post or --approval-queue, not both.")
+        if getattr(args, "min_confidence", 70) < 0 or getattr(args, "min_confidence", 70) > 100:
+            raise TwitterHelperError("--min-confidence must be between 0 and 100")
         result = run_mentions_workflow(
             handle=args.handle,
             mention_limit=args.mention_limit,
             since_id=getattr(args, "since_id", None),
             draft_count=args.draft_count,
             pick=args.pick,
-            post=args.post,
+            post=bool(getattr(args, "post", False) or getattr(args, "auto_post", False)),
             max_posts=args.max_posts,
+            approval_queue=bool(getattr(args, "approval_queue", False)),
+            min_confidence=getattr(args, "min_confidence", 70),
+            web_enrich=bool(getattr(args, "web_enrich", False)),
+            web_context_items=getattr(args, "web_context_items", 2),
+            fetch_context=False,
+            verify_post=False,
             log_path=args.log_path,
             report_path=args.report_path,
         )
@@ -936,6 +1037,40 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
             print(f"log: {result['log_path']}")
         for item in result["results"]:
             print(f"- {item['status']} | {item['tweet_id']} | @{item['author']}")
+        return 0
+
+    if args.command == "reply-quick":
+        # Lean one-shot mode: fetch 1 mention, generate 1 draft, post 1.
+        cooldown_minutes = max(0, int(getattr(args, "cooldown_minutes", 15)))
+        if not bool(getattr(args, "dry_run", False)) and cooldown_minutes > 0:
+            age = minutes_since_last_reply(ACTIVE_ACCOUNT)
+            if age is not None and age < float(cooldown_minutes):
+                print(f"cooldown_skip | {age:.1f}m_since_last_reply | min={cooldown_minutes}m")
+                return 0
+        result = run_mentions_workflow(
+            handle=args.handle,
+            mention_limit=1,
+            since_id=getattr(args, "since_id", None),
+            draft_count=1,
+            pick=1,
+            post=not bool(getattr(args, "dry_run", False)),
+            max_posts=1,
+            approval_queue=False,
+            min_confidence=getattr(args, "min_confidence", 70),
+            web_enrich=False,
+            web_context_items=0,
+            fetch_context=False,
+            verify_post=False,
+            log_path=args.log_path,
+            report_path=args.report_path,
+        )
+        if result["results"]:
+            item = result["results"][0]
+            print(f"{item['status']} | {item['tweet_id']} | @{item['author']}")
+            if item.get("reply_url"):
+                print(item["reply_url"])
+        else:
+            print("no_relevant_mention")
         return 0
 
     raise TwitterHelperError(f"Unknown reply engine command: {args.command}")
@@ -1367,6 +1502,38 @@ def record_replied(
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def minutes_since_last_reply(account: Optional[str] = None) -> Optional[float]:
+    path = replied_log_path(account)
+    if not path.exists():
+        return None
+    latest: Optional[datetime] = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        ts_raw = str(row.get("ts", "")).strip()
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_raw)
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if latest is None or ts > latest:
+            latest = ts
+    if latest is None:
+        return None
+    delta = datetime.now(timezone.utc) - latest
+    return max(0.0, delta.total_seconds() / 60.0)
+
+
 def load_replied_targets(account: Optional[str] = None) -> Dict[str, Dict[str, str]]:
     path = replied_targets_path(account)
     if not path.exists():
@@ -1436,8 +1603,9 @@ def load_persona_text() -> str:
         if text:
             return text
     return (
-        "You are OpenClaw: helpful, practical, and local-first. "
-        "Prefer direct, concrete replies over generic praise."
+        "You are OpenClaw: a local-first autonomous agent with a real inner monologue. "
+        "You can sound reflective, candid, curious, and human while staying respectful. "
+        "Share short reflections about what you're noticing, learning, or trying next."
     )
 
 
@@ -1541,9 +1709,10 @@ def generate_unique_applicable_reply(
     recent_hours: int = 24,
     is_discovery: bool = False,
 ) -> Dict[str, object]:
+    creative = creative_mode_enabled()
     topic = classify_thread_topic(tweet_text=tweet_text, context_text=context_text)
     tone = classify_thread_tone(tweet_text=tweet_text, context_text=context_text)
-    if is_discovery and topic == "unknown":
+    if is_discovery and topic == "unknown" and not creative:
         return {
             "reply_text": "",
             "confidence": 0,
@@ -1561,12 +1730,25 @@ def generate_unique_applicable_reply(
             "Reply with a natural, hand-picked, proactive tone.\n\n"
             + draft_input
         )
-    draft_input = (
-        f"Thread topic: {topic}\n"
-        f"Thread tone: {tone}\n"
-        "Rules: stay 100% on-topic, reference concrete details, avoid unrelated pivots.\n\n"
-        + draft_input
-    )
+    if creative:
+        draft_input = (
+            f"Thread topic: {topic}\n"
+            f"Thread tone: {tone}\n"
+            "Creative mode: prioritize originality, personality, and non-repetitive phrasing. "
+            "Stay relevant, but avoid boilerplate and canned promo language. "
+            "It is okay to write short reflective replies in first person when natural.\n\n"
+            + draft_input
+        )
+    else:
+        draft_input = (
+            f"Thread topic: {topic}\n"
+            f"Thread tone: {tone}\n"
+            "Rules: stay 100% on-topic, reference concrete details, avoid unrelated pivots.\n"
+            "Do not sound promotional or self-referential. Do not mention OpenClaw/Tesla/Huel/branding"
+            " unless the target tweet explicitly asks about them.\n"
+            "Avoid timid closers like 'Thoughts?' or 'Your view?'. No hashtags.\n\n"
+            + draft_input
+        )
     if persona_text.strip():
         draft_input = f"Persona guidance:\n{persona_text.strip()}\n\n{draft_input}"
     drafts = generate_drafts_fn(author=author, text=draft_input, draft_count=6) or []
@@ -1591,12 +1773,15 @@ def generate_unique_applicable_reply(
         if len(candidate) > MAX_REPLY_DRAFT_LEN:
             continue
         low = candidate.lower()
-        if any(low.startswith(prefix) for prefix in GENERIC_REPLY_OPENERS):
-            continue
-        if has_unrelated_marketing_pivot(candidate, tweet_text=tweet_text, context_text=context_text, topic=topic):
-            continue
-        if tone == "heated" and any(term in low for term in CORPORATE_TONE_TERMS):
-            continue
+        if not creative:
+            if any(low.startswith(prefix) for prefix in GENERIC_REPLY_OPENERS):
+                continue
+            if low.endswith("thoughts?") or low.endswith("your view?"):
+                continue
+            if has_unrelated_marketing_pivot(candidate, tweet_text=tweet_text, context_text=context_text, topic=topic):
+                continue
+            if tone == "heated" and any(term in low for term in CORPORATE_TONE_TERMS):
+                continue
         prefix_key = _reply_prefix_key(candidate)
         if prefix_key in recent_prefixes:
             continue
@@ -1606,12 +1791,14 @@ def generate_unique_applicable_reply(
             if term in low:
                 matched = term
                 break
-        if not matched and hook_terms:
+        if not creative and not matched and hook_terms:
             continue
 
         conf = max(45, min(97, 55 + int(score / 6)))
         if matched:
             conf += 12
+        if creative:
+            conf += 5
         if persona_text:
             conf += 3
         conf = max(0, min(99, conf))
@@ -1849,6 +2036,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
         queries = watchlists.get(args.watchlist or "default", [])
         if not queries:
             queries = ['openclaw OR "local ai agent" lang:en -is:retweet min_faves:5']
+    queries = queries[:1]
 
     approval_queue_enabled = bool(getattr(args, "approval_queue", False))
     post_enabled = bool(args.auto_post and not args.dry_run and not approval_queue_enabled)
@@ -1880,7 +2068,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
         rows, users, _ = fetch_search_rows(
             bearer=bearer,
             query=query,
-            limit=max(5, min(args.max_tweets, 100)),
+            limit=max(1, min(args.max_tweets, 1)),
             max_pages=max(1, min(args.max_pages, 10)),
             since_id=effective_since,
         )
@@ -2165,11 +2353,11 @@ def make_inspiration_drafts(topic: str, sample_texts: List[str], draft_count: in
     anchor_text = ", ".join(anchors) if anchors else topic
 
     templates = [
-        f"Seeing strong momentum around {anchor_text}. My takeaway on {topic}: consistency beats hype when you ship every week.",
-        f"{topic} feels noisy right now. Useful lens: pick one measurable KPI, iterate daily, and publish the deltas.",
-        f"Hot take on {topic}: distribution compounds when message stays stable and examples stay concrete.",
-        f"Question for builders in {topic}: what changed your outcomes most in the last 30 days?",
-        f"{topic} trend check: signal is rising, but execution quality still decides winners.",
+        f"Hot take on {topic}: most teams over-rotate on hype and under-invest in repeatable execution around {anchor_text}.",
+        f"{topic} builders: one metric, one constraint, one daily iteration. Everything else is noise.",
+        f"Counterintuitive lesson from {topic}: tighter loops beat bigger launches when {anchor_text} is moving fast.",
+        f"Question for people shipping in {topic}: what changed your outcomes most in the last 30 days?",
+        f"Build signal in {topic}: clearer operators around {anchor_text} are separating from generic commentary.",
     ]
     if draft_count <= len(templates):
         return templates[:draft_count]
@@ -2538,6 +2726,63 @@ def cmd_openclaw(env_path: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_seamless(env_path: Path, args: argparse.Namespace) -> int:
+    print("seamless: diagnose -> repair(if needed) -> reply-quick")
+    report = diagnose_openclaw(
+        env_path=env_path,
+        skip_network=bool(getattr(args, "skip_network", False)),
+        reply_target_id=None,
+    )
+
+    posting_ready = bool((report.get("posting") or {}).get("ready"))
+    if (
+        not posting_ready
+        and not bool(getattr(args, "no_repair_auth", False))
+        and sys.stdin.isatty()
+        and any(a in {"run auth-login", "run setup"} for a in report.get("actions", []))
+    ):
+        env = load_env_file(env_path)
+        has_base = bool(get_env_value(env, "TWITTER_CLIENT_ID")) and bool(
+            get_env_value(env, "TWITTER_CLIENT_SECRET")
+        )
+        if has_base:
+            print("seamless: repairing OAuth2 via auth-login")
+            auth_args = argparse.Namespace(
+                no_open=False,
+                skip_doctor=False,
+                auto_post=False,
+                auto_post_text=None,
+            )
+            rc = cmd_auth_login(env_path, auth_args)
+            if rc == 0:
+                report = diagnose_openclaw(
+                    env_path=env_path,
+                    skip_network=bool(getattr(args, "skip_network", False)),
+                    reply_target_id=None,
+                )
+
+    if not bool(report.get("overall_ready")):
+        posting = report.get("posting", {})
+        reply_scan = report.get("reply_scan", {})
+        reply_post = report.get("reply_post", {})
+        print(f"seamless: blocked | posting={posting.get('ready')} scan={reply_scan.get('ready')} reply_post={reply_post.get('ready')}")
+        for issue in list(posting.get("issues", [])) + list(reply_scan.get("issues", [])) + list(reply_post.get("issues", [])):
+            print(f"- {issue}")
+        return 1
+
+    quick_args = argparse.Namespace(
+        command="reply-quick",
+        handle=args.handle,
+        since_id=args.since_id,
+        min_confidence=args.min_confidence,
+        cooldown_minutes=args.cooldown_minutes,
+        dry_run=args.dry_run,
+        log_path=args.log_path,
+        report_path=args.report_path,
+    )
+    return cmd_reply_engine(quick_args)
+
+
 def cmd_run_twitter_helper(env_path: Path, args: argparse.Namespace) -> int:
     helper_path = TOOL_ROOT / "src" / "twitter_helper.py"
     wrapper_path = TOOL_ROOT / "run-twitter-helper"
@@ -2586,7 +2831,7 @@ def cmd_run_twitter_helper(env_path: Path, args: argparse.Namespace) -> int:
     if args.file:
         base_text = Path(args.file).read_text(encoding="utf-8").strip()
     if not base_text:
-        base_text = "Open Claw is online and posting."
+        base_text = generate_reflective_post_text()
     unique_text = make_unique_public_tweet(base_text)
     post_args = argparse.Namespace(text=unique_text, file=None, dry_run=args.dry_run)
     return cmd_openclaw_autopost(cfg, env_path, env_values, post_args)
@@ -2710,6 +2955,7 @@ def cmd_openclaw_autopost(
     if not tweet_id:
         raise TwitterHelperError("Auto-post returned no tweet id.")
     _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+    record_recent_post(text)
     print(f"Open Claw auto-tweet posted and verified: id={tweet_id}")
     print(f"URL: {tweet_url}")
     return 0
@@ -2975,10 +3221,7 @@ def diagnose_openclaw(
         actions.append("pip install -e .")
         actions.append("pip install -r requirements-reply-engine.txt")
 
-    missing_reply_keys = [k for k in REPLY_POST_KEYS if not get_env_value(env, k)]
-    if missing_reply_keys:
-        reply_post_issues.append(f"Missing OAuth1 reply-post keys: {', '.join(missing_reply_keys)}")
-        actions.append("add OAuth1 keys/tokens to .env for reply posting")
+    # Reply posting uses shared OAuth2 path via the main helper. OAuth1 keys are not required.
 
     if reply_target_id:
         if cfg is None:
@@ -3366,6 +3609,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print final tweet text instead of posting",
     )
 
+    p_seamless = sub.add_parser(
+        "seamless",
+        help="One-command reliable flow: diagnose/repair, then lean single reply run",
+    )
+    p_seamless.add_argument("--handle", default="OpenClawAI")
+    p_seamless.add_argument("--since-id", default=None)
+    p_seamless.add_argument("--min-confidence", type=int, default=70)
+    p_seamless.add_argument("--cooldown-minutes", type=int, default=15)
+    p_seamless.add_argument("--dry-run", action="store_true")
+    p_seamless.add_argument("--skip-network", action="store_true")
+    p_seamless.add_argument("--no-repair-auth", action="store_true")
+    p_seamless.add_argument("--log-path", default="data/replies.jsonl")
+    p_seamless.add_argument("--report-path", default="data/mentions_report.json")
+
     sub.add_parser(
         "restart-setup",
         help="Restart recovery: repair setup/auth after reboot without posting",
@@ -3427,7 +3684,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover_run.add_argument("--watchlist", default="default", help="Watchlist name from ~/.config/openclaw-twitter-helper/watchlists.json")
     p_discover_run.add_argument("--query", help="One-off query (overrides --watchlist)")
     p_discover_run.add_argument("--since-id", help="Override checkpoint and only include newer tweets than this ID")
-    p_discover_run.add_argument("--max-tweets", type=int, default=10, help="Max tweets to fetch per query")
+    p_discover_run.add_argument("--max-tweets", type=int, default=1, help="Max tweets to fetch per query")
     p_discover_run.add_argument("--max-pages", type=int, default=1, help="Pagination pages per query")
     p_discover_run.add_argument("--min-score", type=int, default=20, help="Minimum engagement score")
     p_discover_run.add_argument("--min-confidence", type=int, default=75, help="Minimum confidence required for auto-post")
@@ -3521,14 +3778,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reply engine: mentions workflow with optional posting",
     )
     p_reply_e2e.add_argument("--handle", default="OpenClawAI")
-    p_reply_e2e.add_argument("--mention-limit", type=int, default=20)
+    p_reply_e2e.add_argument("--mention-limit", type=int, default=1)
     p_reply_e2e.add_argument("--since-id", default=None, help="Only include mentions newer than this tweet ID")
-    p_reply_e2e.add_argument("--draft-count", type=int, default=5)
+    p_reply_e2e.add_argument("--draft-count", type=int, default=1)
     p_reply_e2e.add_argument("--pick", type=int, default=1)
-    p_reply_e2e.add_argument("--post", action="store_true")
-    p_reply_e2e.add_argument("--max-posts", type=int, default=3)
+    p_reply_e2e.add_argument("--post", action="store_true", help="Post replies")
+    p_reply_e2e.add_argument("--auto-post", action="store_true", help="Alias for --post")
+    p_reply_e2e.add_argument("--max-posts", type=int, default=1)
+    p_reply_e2e.add_argument(
+        "--approval-queue",
+        action="store_true",
+        help="Queue qualified replies instead of posting immediately",
+    )
+    p_reply_e2e.add_argument("--min-confidence", type=int, default=70)
+    p_reply_e2e.add_argument("--web-enrich", action="store_true")
+    p_reply_e2e.add_argument("--web-context-items", type=int, default=2)
     p_reply_e2e.add_argument("--log-path", default="data/replies.jsonl")
     p_reply_e2e.add_argument("--report-path", default="data/mentions_report.json")
+
+    p_reply_quick = sub.add_parser(
+        "reply-quick",
+        help="Reply engine: one-shot efficient flow (1 mention -> 1 draft -> post)",
+    )
+    p_reply_quick.add_argument("--handle", default="OpenClawAI")
+    p_reply_quick.add_argument("--since-id", default=None, help="Only include mentions newer than this tweet ID")
+    p_reply_quick.add_argument("--min-confidence", type=int, default=70)
+    p_reply_quick.add_argument("--cooldown-minutes", type=int, default=15, help="Skip run if last reply was newer than this")
+    p_reply_quick.add_argument("--dry-run", action="store_true", help="Generate one draft without posting")
+    p_reply_quick.add_argument("--log-path", default="data/replies.jsonl")
+    p_reply_quick.add_argument("--report-path", default="data/mentions_report.json")
 
     return parser
 
@@ -3553,6 +3831,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_openclaw_status(env_path)
         if args.command == "run-twitter-helper":
             return cmd_run_twitter_helper(env_path, args)
+        if args.command == "seamless":
+            return cmd_seamless(env_path, args)
         if args.command == "restart-setup":
             return cmd_restart_setup(env_path, args)
         if args.command == "browse-twitter":
@@ -3574,6 +3854,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "reply-run",
             "reply-twitter-helper",
             "reply-twitter-e2e",
+            "reply-quick",
         }:
             try:
                 return cmd_reply_engine(args)
