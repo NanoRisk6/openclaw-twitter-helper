@@ -57,10 +57,19 @@ class PostSanitizeTests(unittest.TestCase):
     def test_cmd_post_passes_reply_id(self) -> None:
         captured = {}
 
-        def fake_post_with_retry(cfg, env_path, env_values, text, reply_to_id=None, media_ids=None):
+        def fake_post_with_retry(
+            cfg,
+            env_path,
+            env_values,
+            text,
+            reply_to_id=None,
+            media_ids=None,
+            unique_on_duplicate=False,
+        ):
             captured["reply_to_id"] = reply_to_id
             captured["text"] = text
             captured["media_ids"] = media_ids
+            captured["unique_on_duplicate"] = unique_on_duplicate
             return cfg, (201, {"data": {"id": "tweet123"}})
 
         cfg = twitter_helper.Config(
@@ -102,6 +111,7 @@ class PostSanitizeTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIsNone(captured["reply_to_id"])
         self.assertIsNone(captured["media_ids"])
+        self.assertFalse(captured["unique_on_duplicate"])
 
     def test_verify_post_visible_success(self) -> None:
         cfg = twitter_helper.Config(
@@ -606,8 +616,17 @@ class PostSanitizeTests(unittest.TestCase):
             },
         )()
 
-        def fake_post_with_retry(cfg, env_path, env_values, text, reply_to_id=None, media_ids=None):
+        def fake_post_with_retry(
+            cfg,
+            env_path,
+            env_values,
+            text,
+            reply_to_id=None,
+            media_ids=None,
+            unique_on_duplicate=False,
+        ):
             captured["media_ids"] = media_ids
+            captured["unique_on_duplicate"] = unique_on_duplicate
             return cfg, (201, {"data": {"id": "tweet999"}})
 
         original_ensure_auth = twitter_helper.ensure_auth
@@ -633,6 +652,63 @@ class PostSanitizeTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(captured["media_ids"], ["media123"])
+        self.assertFalse(captured["unique_on_duplicate"])
+
+    def test_cmd_post_reply_enables_unique_on_duplicate(self) -> None:
+        captured = {}
+        cfg = twitter_helper.Config(
+            client_id="cid",
+            client_secret="secret",
+            access_token="token",
+            refresh_token="refresh",
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "text": "Reply text",
+                "file": None,
+                "in_reply_to": "12345",
+                "unique": False,
+                "dry_run": False,
+                "media": None,
+                "alt_text": None,
+            },
+        )()
+
+        def fake_post_with_retry(
+            cfg,
+            env_path,
+            env_values,
+            text,
+            reply_to_id=None,
+            media_ids=None,
+            unique_on_duplicate=False,
+        ):
+            captured["unique_on_duplicate"] = unique_on_duplicate
+            return cfg, (201, {"data": {"id": "tweet1000"}})
+
+        original_ensure_auth = twitter_helper.ensure_auth
+        original_fetch_tweet = twitter_helper.fetch_tweet
+        original_post_with_retry = twitter_helper.post_with_retry
+        original_verify_post_visible = twitter_helper.verify_post_visible
+        twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
+        twitter_helper.fetch_tweet = lambda cfg, tweet_id: (200, {"data": {"id": tweet_id}})
+        twitter_helper.post_with_retry = fake_post_with_retry
+        twitter_helper.verify_post_visible = lambda cfg, tweet_id, attempts=3, delay_seconds=1.0: (
+            "",
+            f"https://x.com/i/web/status/{tweet_id}",
+        )
+        try:
+            rc = twitter_helper.cmd_post(cfg, Path("."), {}, args)
+        finally:
+            twitter_helper.ensure_auth = original_ensure_auth
+            twitter_helper.fetch_tweet = original_fetch_tweet
+            twitter_helper.post_with_retry = original_post_with_retry
+            twitter_helper.verify_post_visible = original_verify_post_visible
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(captured["unique_on_duplicate"])
 
     def test_upload_media_rejects_more_than_max_images(self) -> None:
         with self.assertRaises(twitter_helper.TwitterHelperError):
@@ -673,6 +749,44 @@ class PostSanitizeTests(unittest.TestCase):
         self.assertIn('"count": 1', list_output.getvalue())
         self.assertEqual(rc_approve, 0)
         self.assertIn(f"dry-run approve q_{qid}", approve_output.getvalue())
+
+    def test_post_with_retry_duplicate_reply_retries_with_unique_text(self) -> None:
+        cfg = twitter_helper.Config(
+            client_id="cid",
+            client_secret="secret",
+            access_token="token",
+            refresh_token="refresh",
+        )
+        calls = []
+
+        def fake_post_tweet(cfg, text, reply_to_id=None, media_ids=None, run_tag=None):
+            calls.append(text)
+            if len(calls) == 1:
+                return 403, {"detail": "You are not allowed to create a Tweet with duplicate content."}
+            return 201, {"data": {"id": "tweet-dupe-fixed"}}
+
+        original_ensure_auth = twitter_helper.ensure_auth
+        original_post_tweet = twitter_helper.post_tweet
+        twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
+        twitter_helper.post_tweet = fake_post_tweet
+        try:
+            _, (status, body) = twitter_helper.post_with_retry(
+                cfg,
+                Path("."),
+                {},
+                "Same reply body",
+                reply_to_id="12345",
+                unique_on_duplicate=True,
+            )
+        finally:
+            twitter_helper.ensure_auth = original_ensure_auth
+            twitter_helper.post_tweet = original_post_tweet
+
+        self.assertEqual(status, 201)
+        self.assertEqual(body.get("data", {}).get("id"), "tweet-dupe-fixed")
+        self.assertEqual(len(calls), 2)
+        self.assertNotEqual(calls[0], calls[1])
+        self.assertRegex(calls[1], r" • r\d{6}-[0-9a-f]{2}$")
 
 
 if __name__ == "__main__":

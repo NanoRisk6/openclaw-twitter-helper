@@ -731,6 +731,30 @@ def make_unique_public_tweet(base_text: str) -> str:
     return base + suffix
 
 
+def make_unique_reply_tweet(base_text: str) -> str:
+    base = sanitize_public_text(base_text)
+    if not base:
+        raise TwitterHelperError("No reply text provided.")
+
+    suffix = datetime.now(timezone.utc).strftime(" • r%H%M%S") + f"-{secrets.token_hex(1)}"
+    allowed = MAX_TWEET_LEN - len(suffix)
+    if allowed < 1:
+        raise TwitterHelperError("Reply too long to append uniqueness suffix.")
+    if len(base) > allowed:
+        if allowed <= 3:
+            base = base[:allowed]
+        else:
+            base = base[: allowed - 3].rstrip() + "..."
+    return base + suffix
+
+
+def is_duplicate_content_error(status: int, body: Dict[str, object]) -> bool:
+    if status != 403:
+        return False
+    haystack = json.dumps(body, ensure_ascii=False).lower()
+    return "duplicate content" in haystack or "duplicate" in haystack
+
+
 def ensure_auth(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> Config:
     status, _ = me(cfg)
     if status == 200:
@@ -1305,6 +1329,7 @@ def cmd_reply_approve(env_path: Path, args: argparse.Namespace) -> int:
             env_values,
             text,
             reply_to_id=reply_to,
+            unique_on_duplicate=bool(reply_to),
         )
         if status < 200 or status >= 300:
             print(f"[FAIL] q_{qid} post failed: {json.dumps(body, ensure_ascii=False)}")
@@ -1529,6 +1554,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                     env_values,
                     draft,
                     reply_to_id=tid,
+                    unique_on_duplicate=True,
                 )
                 if status < 200 or status >= 300:
                     item["action"] = "post_failed"
@@ -2157,6 +2183,7 @@ def post_with_retry(
     text: str,
     reply_to_id: Optional[str] = None,
     media_ids: Optional[List[str]] = None,
+    unique_on_duplicate: bool = False,
 ) -> Tuple[Config, Tuple[int, Dict[str, object]]]:
     run_tag = unique_marker("openclaw")
     fresh = ensure_auth(cfg, env_path, env_values)
@@ -2173,6 +2200,16 @@ def post_with_retry(
         status, body = post_tweet(
             fresh,
             text,
+            reply_to_id=reply_to_id,
+            media_ids=media_ids,
+            run_tag=run_tag,
+        )
+    if unique_on_duplicate and is_duplicate_content_error(status, body):
+        print("[INFO] Duplicate content rejected; retrying once with unique reply suffix.")
+        unique_text = make_unique_reply_tweet(text)
+        status, body = post_tweet(
+            fresh,
+            unique_text,
             reply_to_id=reply_to_id,
             media_ids=media_ids,
             run_tag=run_tag,
@@ -2656,6 +2693,7 @@ def cmd_post(
         text,
         reply_to_id=args.in_reply_to,
         media_ids=media_ids,
+        unique_on_duplicate=bool(args.in_reply_to),
     )
 
     if status < 200 or status >= 300:
