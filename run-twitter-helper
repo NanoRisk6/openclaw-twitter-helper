@@ -3,9 +3,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIRST_ARG="${1:-}"
 
+# Easy restart aliases for users/subagents.
+case "$FIRST_ARG" in
+  restart|recover|fix|reboot)
+    shift || true
+    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" restart-setup "$@"
+    ;;
+esac
+
 # If caller passed a real subcommand, forward directly.
 case "$FIRST_ARG" in
-  setup|auth-login|doctor|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper)
+  setup|auth-login|doctor|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper|restart-setup)
     exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "$@"
     ;;
   *)

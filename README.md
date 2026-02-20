@@ -34,6 +34,27 @@ This command will:
 - launch OAuth browser repair if auth is broken,
 - post a unique public tweet by appending a UTC timestamp suffix.
 
+## After Restart (Fast Recovery)
+
+If Mac reboot caused auth/setup issues, run:
+
+```bash
+/Users/matthew/openclaw-twitter-helper/run-twitter-helper restart
+```
+
+This recovery flow:
+- verifies credentials/config,
+- runs doctor,
+- launches OAuth repair if needed,
+- does **not** post a tweet.
+
+Aliases supported:
+
+```bash
+/Users/matthew/openclaw-twitter-helper/run-twitter-helper recover
+/Users/matthew/openclaw-twitter-helper/run-twitter-helper fix
+```
+
 ## Twitter App Settings (What to choose)
 
 Run this to print exact values from your current env:

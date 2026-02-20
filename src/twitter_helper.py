@@ -628,6 +628,50 @@ def cmd_run_twitter_helper(env_path: Path, args: argparse.Namespace) -> int:
     return cmd_openclaw_autopost(cfg, env_path, env_values, post_args)
 
 
+def cmd_restart_setup(env_path: Path, args: argparse.Namespace) -> int:
+    print("Twitter Helper Restart Recovery")
+    print("Goal: restore setup/auth health after restart without posting.")
+
+    env = load_env_file(env_path)
+    has_client_id = bool(get_env_value(env, "TWITTER_CLIENT_ID"))
+    has_client_secret = bool(get_env_value(env, "TWITTER_CLIENT_SECRET"))
+
+    if not has_client_id or not has_client_secret:
+        print("Missing app credentials. Launching setup...")
+        setup_args = argparse.Namespace(reset=False, skip_auth_login=False)
+        rc = cmd_setup(env_path, setup_args)
+        if rc != 0:
+            return rc
+    else:
+        print("App credentials found.")
+
+    print("Running doctor...")
+    doctor_rc = cmd_doctor(env_path)
+    if doctor_rc == 0:
+        print("Recovery complete. Posting is healthy.")
+        return 0
+
+    if not sys.stdin.isatty():
+        raise TwitterHelperError(
+            "Recovery requires interactive OAuth callback input. "
+            "Run `auth-login` once in an interactive terminal."
+        )
+
+    print("Doctor failed. Launching OAuth login repair...")
+    auth_args = argparse.Namespace(
+        no_open=False,
+        skip_doctor=False,
+        auto_post=False,
+        auto_post_text=None,
+    )
+    auth_rc = cmd_auth_login(env_path, auth_args)
+    if auth_rc != 0:
+        return auth_rc
+
+    print("Recovery complete. Posting is healthy.")
+    return 0
+
+
 def post_with_retry(
     cfg: Config,
     env_path: Path,
@@ -1006,6 +1050,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print final tweet text instead of posting",
     )
 
+    sub.add_parser(
+        "restart-setup",
+        help="Restart recovery: repair setup/auth after reboot without posting",
+    )
+
     return parser
 
 
@@ -1026,6 +1075,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_openclaw_status(env_path)
         if args.command == "run-twitter-helper":
             return cmd_run_twitter_helper(env_path, args)
+        if args.command == "restart-setup":
+            return cmd_restart_setup(env_path, args)
         if args.command == "auth-login":
             return cmd_auth_login(env_path, args)
         if args.command == "doctor":
