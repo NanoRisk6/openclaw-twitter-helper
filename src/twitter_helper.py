@@ -35,7 +35,7 @@ MEDIA_METADATA_URL = f"{API_BASE}/media/metadata"
 MAX_TWEET_LEN = 280
 MAX_UNBROKEN_SEGMENT_LEN = 48
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
-DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access media.write"
+DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access media.write like.write"
 RUN_TAG_SUFFIX_RE = re.compile(
     r"\s*\[(?:openclaw|twitter-engine)-\d{8}-\d{6}-[a-z0-9]{4}\]\s*$",
     re.IGNORECASE,
@@ -308,6 +308,7 @@ CONFIG_KEYS = [
     "TWITTER_REDIRECT_URI",
     "TWITTER_WEBSITE_URL",
     "TWITTER_SCOPES",
+    "TWITTER_AUTO_SELF_LIKE",
 ]
 
 @dataclass
@@ -872,6 +873,48 @@ def fetch_tweet_with_author(cfg: Config, tweet_id: str) -> Tuple[int, Dict[str, 
         ),
         {"Authorization": f"Bearer {cfg.access_token}"},
     )
+
+
+def auto_self_like_enabled(env_values: Dict[str, str]) -> bool:
+    raw = str(
+        get_env_value(env_values, "TWITTER_AUTO_SELF_LIKE", os.getenv("TWITTER_AUTO_SELF_LIKE", "1"))
+    ).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def try_auto_self_like(
+    cfg: Config,
+    env_path: Path,
+    env_values: Dict[str, str],
+    tweet_id: str,
+) -> bool:
+    tid = str(tweet_id).strip()
+    if not tid:
+        return False
+    if not auto_self_like_enabled(env_values):
+        return False
+    try:
+        user_id = resolve_current_user_id(env_path, env_values)
+        status, body = http_json(
+            "POST",
+            f"{API_BASE}/users/{user_id}/likes",
+            {"Authorization": f"Bearer {cfg.access_token}"},
+            payload={"tweet_id": tid},
+        )
+        if 200 <= status < 300:
+            print(f"[INFO] Auto-liked tweet: {tid}")
+            return True
+        body_text = json.dumps(body, ensure_ascii=False).lower()
+        if status in {400, 403} and ("like.write" in body_text or "scope" in body_text):
+            print(
+                "[WARN] Auto-like skipped: app is missing `like.write` scope. "
+                "Run `auth-login` to refresh scopes."
+            )
+            return False
+        print(f"[WARN] Auto-like failed ({status}): {json.dumps(body, ensure_ascii=False)}")
+    except Exception as exc:
+        print(f"[WARN] Auto-like failed: {exc}")
+    return False
 
 
 def build_x_url(tweet_id: str, username: Optional[str] = None) -> str:
@@ -4585,6 +4628,7 @@ def cmd_engine_autopost(
     if not tweet_id:
         raise TwitterHelperError("Auto-post returned no tweet id.")
     _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+    try_auto_self_like(fresh, env_path, env_values, str(tweet_id))
     record_recent_post(text)
     record_tweet_memory(
         kind="post",
@@ -4741,10 +4785,15 @@ def cmd_doctor(env_path: Path) -> int:
 
     print("[PASS] Config values are present.")
     scopes = get_env_value(env, "TWITTER_SCOPES", DEFAULT_SCOPES)
-    if "media.write" not in scopes.split():
+    scope_set = set(scopes.split())
+    if "media.write" not in scope_set:
         print("[WARN] media.write scope not configured. Media upload requires re-auth with media.write scope.")
     else:
         print("[PASS] Media upload ready (multi-image, size/MIME validation enabled).")
+    if "like.write" not in scope_set:
+        print("[WARN] like.write scope not configured. Auto self-like requires re-auth with like.write scope.")
+    else:
+        print("[PASS] Auto self-like scope ready (like.write).")
     if not get_env_value(env, "TWITTER_BEARER_TOKEN"):
         print(
             "[WARN] TWITTER_BEARER_TOKEN is missing. "
@@ -5115,6 +5164,7 @@ def cmd_post(
     if not tweet_id:
         raise TwitterHelperError("Post returned no tweet id.")
     _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+    try_auto_self_like(fresh, env_path, env_values, str(tweet_id))
     if args.in_reply_to:
         mark_replied_target(str(args.in_reply_to), str(tweet_id), source="post")
         record_tweet_memory(
@@ -5166,6 +5216,7 @@ def cmd_thread(
 
         parent_id = tweet_id
         _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+        try_auto_self_like(fresh, env_path, env_values, str(tweet_id))
         record_tweet_memory(
             kind="thread_post",
             text=text,

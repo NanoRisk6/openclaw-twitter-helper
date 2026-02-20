@@ -291,6 +291,10 @@ def _post_reply_via_shared_oauth2(
     reply_id = str(data.get("id", "")) if isinstance(data, dict) else ""
     if not reply_id:
         raise RuntimeError("OAuth2 post succeeded but returned no reply id")
+    try:
+        main_helper.try_auto_self_like(fresh, env_path, env_values, reply_id)
+    except Exception:
+        pass
     if verify_visible:
         _, url = main_helper.verify_post_visible(fresh, reply_id)
     else:
