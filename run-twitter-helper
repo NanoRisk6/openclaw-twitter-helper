@@ -13,7 +13,7 @@ esac
 
 # If caller passed a real subcommand, forward directly.
 case "$FIRST_ARG" in
-  setup|auth-login|doctor|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper|restart-setup|browse-twitter|reply-discover|reply-rank|reply-ideas|reply-run|reply-twitter-helper|reply-twitter-e2e)
+  setup|auth-login|doctor|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper|restart-setup|browse-twitter|inspire-tweets|reply-discover|reply-rank|reply-ideas|reply-run|reply-twitter-helper|reply-twitter-e2e)
     exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "$@"
     ;;
   *)

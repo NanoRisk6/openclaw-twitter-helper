@@ -136,6 +136,12 @@ Incremental scan + save:
 python src/twitter_helper.py browse-twitter --handle OpenClawAI --since-id 2024835587052613989 --limit 20 --max-pages 2 --save data/browse_latest.json
 ```
 
+Generate tweet inspiration from live Twitter browsing:
+
+```bash
+python src/twitter_helper.py inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json
+```
+
 ## Integrated Reply Engine
 
 Discover:

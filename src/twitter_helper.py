@@ -3,6 +3,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -25,6 +26,7 @@ DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access"
 OPENCLAW_SUFFIX_RE = re.compile(
     r"\s*\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]\s*$", re.IGNORECASE
 )
+WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_'-]{2,}")
 TOOL_ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG_KEYS = [
@@ -49,6 +51,46 @@ class Config:
 
 class TwitterHelperError(Exception):
     pass
+
+
+STOPWORDS = {
+    "about",
+    "after",
+    "again",
+    "also",
+    "been",
+    "being",
+    "both",
+    "from",
+    "have",
+    "into",
+    "just",
+    "like",
+    "more",
+    "most",
+    "only",
+    "over",
+    "really",
+    "some",
+    "than",
+    "that",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "very",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
+    "your",
+}
 
 
 def load_env_file(env_path: Path) -> Dict[str, str]:
@@ -629,6 +671,180 @@ def cmd_browse_twitter(env_path: Path, args: argparse.Namespace) -> int:
             print(f"   https://x.com/{username}/status/{tid}")
         else:
             print(f"   https://x.com/i/web/status/{tid}")
+    return 0
+
+
+def fetch_search_rows(
+    bearer: str,
+    query: str,
+    limit: int,
+    max_pages: int,
+    since_id: Optional[str] = None,
+    until_id: Optional[str] = None,
+) -> Tuple[List[Dict[str, object]], Dict[str, str], Dict[str, object]]:
+    all_data: List[Dict[str, object]] = []
+    users: Dict[str, str] = {}
+    meta: Dict[str, object] = {}
+    next_token = None
+    pages = 0
+
+    while pages < max_pages:
+        params = [
+            f"query={urllib.parse.quote(query)}",
+            f"max_results={limit}",
+            "expansions=author_id",
+            "tweet.fields=created_at,public_metrics,conversation_id,text",
+            "user.fields=username,name",
+        ]
+        if since_id:
+            params.append(f"since_id={urllib.parse.quote(str(since_id))}")
+        if until_id:
+            params.append(f"until_id={urllib.parse.quote(str(until_id))}")
+        if next_token:
+            params.append(f"next_token={urllib.parse.quote(next_token)}")
+
+        status, body = api_get_with_token(
+            f"{API_BASE}/tweets/search/recent?" + "&".join(params),
+            bearer,
+        )
+        if status == 401:
+            raise TwitterHelperError(
+                "browse-twitter unauthorized (401). "
+                "Check TWITTER_BEARER_TOKEN has v2 read access, or refresh OAuth2 with `auth-login`."
+            )
+        if status >= 400:
+            raise TwitterHelperError(
+                f"browse query failed ({status}): {json.dumps(body, ensure_ascii=False)}"
+            )
+
+        includes = body.get("includes") if isinstance(body, dict) else None
+        if isinstance(includes, dict) and isinstance(includes.get("users"), list):
+            for u in includes["users"]:
+                if isinstance(u, dict):
+                    users[str(u.get("id", ""))] = u.get("username", "unknown")
+
+        data = body.get("data") if isinstance(body, dict) else None
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict):
+                    all_data.append(row)
+
+        meta = body.get("meta") if isinstance(body, dict) and isinstance(body.get("meta"), dict) else {}
+        next_token = str(meta.get("next_token", "")) if meta.get("next_token") else None
+        pages += 1
+        if not next_token:
+            break
+
+    return all_data, users, meta
+
+
+def top_terms(texts: List[str], top_n: int = 8) -> List[Tuple[str, int]]:
+    counts: Dict[str, int] = {}
+    for text in texts:
+        for m in WORD_RE.findall(text.lower()):
+            if m in STOPWORDS:
+                continue
+            counts[m] = counts.get(m, 0) + 1
+    return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+
+
+def make_inspiration_drafts(topic: str, sample_texts: List[str], draft_count: int) -> List[str]:
+    terms = [t for t, _ in top_terms(sample_texts, top_n=10)]
+    anchors = terms[: min(3, len(terms))]
+    anchor_text = ", ".join(anchors) if anchors else topic
+
+    templates = [
+        f"Seeing strong momentum around {anchor_text}. My takeaway on {topic}: consistency beats hype when you ship every week.",
+        f"{topic} feels noisy right now. Useful lens: pick one measurable KPI, iterate daily, and publish the deltas.",
+        f"Hot take on {topic}: distribution compounds when message stays stable and examples stay concrete.",
+        f"Question for builders in {topic}: what changed your outcomes most in the last 30 days?",
+        f"{topic} trend check: signal is rising, but execution quality still decides winners.",
+    ]
+    if draft_count <= len(templates):
+        return templates[:draft_count]
+    out = list(templates)
+    while len(out) < draft_count:
+        idx = len(out) + 1
+        out.append(f"{topic} note #{idx}: share one tactic, one metric, one lesson.")
+    return out
+
+
+def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
+    env = load_env_file(env_path)
+    bearer = get_read_bearer_token(env)
+    limit = max(5, min(args.limit, 100))
+    max_pages = max(1, min(args.max_pages, 10))
+
+    query = args.query
+    if not query:
+        q_topic = args.topic.strip() if args.topic else "openclaw OR ai agents"
+        query = f"({q_topic}) lang:en -is:retweet"
+
+    rows, users, _ = fetch_search_rows(
+        bearer=bearer,
+        query=query,
+        limit=limit,
+        max_pages=max_pages,
+        since_id=args.since_id,
+        until_id=args.until_id,
+    )
+    if not rows:
+        print("No tweets found for inspiration query.")
+        return 0
+
+    sample = rows[: min(len(rows), args.sample_size)]
+    sample_texts = [str(r.get("text", "")) for r in sample if isinstance(r, dict)]
+    terms = top_terms(sample_texts, top_n=8)
+    drafts = make_inspiration_drafts(args.topic or "this space", sample_texts, args.draft_count)
+
+    if args.save:
+        out = Path(args.save)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "query": query,
+            "count": len(rows),
+            "sample_size": len(sample),
+            "top_terms": terms,
+            "drafts": drafts,
+            "sample": sample,
+        }
+        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Saved inspiration output -> {out}")
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "query": query,
+                    "count": len(rows),
+                    "top_terms": terms,
+                    "drafts": drafts,
+                    "sample": sample,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"Query: {query}")
+    print(f"Fetched: {len(rows)} tweets")
+    print("Top themes:")
+    for term, count in terms:
+        print(f"- {term} ({count})")
+    print("Inspiration drafts:")
+    for i, d in enumerate(drafts, start=1):
+        print(f"{i}. {d}")
+    print("Sample tweets:")
+    for i, row in enumerate(sample, start=1):
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("id", ""))
+        aid = str(row.get("author_id", ""))
+        username = users.get(aid, "unknown")
+        text = str(row.get("text", "")).replace("\n", " ").strip()
+        print(f"{i}. @{username} | {tid}")
+        print(f"   {text}")
     return 0
 
 
@@ -1453,6 +1669,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_browse.add_argument("--json", action="store_true", help="Print raw JSON response")
 
+    p_inspire = sub.add_parser(
+        "inspire-tweets",
+        help="Browse Twitter and generate inspiration drafts from current conversation themes",
+    )
+    p_inspire.add_argument("--topic", default="OpenClaw", help="Topic label for drafted tweets")
+    p_inspire.add_argument("--query", help="Custom search query (defaults from --topic)")
+    p_inspire.add_argument("--limit", type=int, default=20, help="Results per page (5-100)")
+    p_inspire.add_argument("--max-pages", type=int, default=2, help="Pages to fetch (1-10)")
+    p_inspire.add_argument("--since-id", help="Only include tweets newer than this tweet ID")
+    p_inspire.add_argument("--until-id", help="Only include tweets older than this tweet ID")
+    p_inspire.add_argument("--sample-size", type=int, default=12, help="Sample tweets used to derive themes")
+    p_inspire.add_argument("--draft-count", type=int, default=5, help="Number of inspiration drafts")
+    p_inspire.add_argument("--save", help="Optional file path to save JSON output")
+    p_inspire.add_argument("--json", action="store_true", help="Print raw JSON output")
+
     p_reply_discover = sub.add_parser(
         "reply-discover",
         help="Reply engine: discover candidate conversations",
@@ -1536,6 +1767,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_restart_setup(env_path, args)
         if args.command == "browse-twitter":
             return cmd_browse_twitter(env_path, args)
+        if args.command == "inspire-tweets":
+            return cmd_inspire_tweets(env_path, args)
         if args.command in {
             "reply-discover",
             "reply-rank",
