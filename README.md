@@ -44,6 +44,9 @@ python src/twitter_helper.py auth-login
 python src/twitter_helper.py doctor
 ```
 
+`setup` now also asks for `TWITTER_BEARER_TOKEN` (App-Only Authentication).  
+This token is optional for basic posting, but recommended for reply scan/mentions workflows.
+
 One-command mode (check/repair + post unique tweet):
 
 ```bash
@@ -140,6 +143,8 @@ Mentions workflow:
 ```bash
 python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1
 ```
+
+For `reply-twitter-e2e` and other scan/read-heavy reply flows, set `TWITTER_BEARER_TOKEN` in `.env`.
 
 ## Examples
 

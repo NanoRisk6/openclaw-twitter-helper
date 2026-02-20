@@ -30,6 +30,7 @@ TOOL_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
     "TWITTER_CLIENT_SECRET",
+    "TWITTER_BEARER_TOKEN",
     "TWITTER_OAUTH2_ACCESS_TOKEN",
     "TWITTER_OAUTH2_REFRESH_TOKEN",
     "TWITTER_REDIRECT_URI",
@@ -417,6 +418,7 @@ def config_status(env_path: Path) -> Dict[str, object]:
 
     has_client_id = bool(get_env_value(env, "TWITTER_CLIENT_ID"))
     has_client_secret = bool(get_env_value(env, "TWITTER_CLIENT_SECRET"))
+    has_bearer_token = bool(get_env_value(env, "TWITTER_BEARER_TOKEN"))
     has_access_token = bool(get_env_value(env, "TWITTER_OAUTH2_ACCESS_TOKEN"))
     has_refresh_token = bool(get_env_value(env, "TWITTER_OAUTH2_REFRESH_TOKEN"))
 
@@ -441,6 +443,7 @@ def config_status(env_path: Path) -> Dict[str, object]:
         "env_exists": exists,
         "has_client_id": has_client_id,
         "has_client_secret": has_client_secret,
+        "has_bearer_token": has_bearer_token,
         "has_oauth2_access_token": has_access_token,
         "has_oauth2_refresh_token": has_refresh_token,
         "ready_for_oauth_login": ready_for_oauth_login,
@@ -580,6 +583,12 @@ def cmd_setup(env_path: Path, args: argparse.Namespace) -> int:
         current = "" if args.reset else env.get(key, "")
         env[key] = prompt_value(key, current=current)
 
+    env["TWITTER_BEARER_TOKEN"] = prompt_value(
+        "TWITTER_BEARER_TOKEN (App-Only, optional but recommended for reply scan workflows)",
+        current="" if args.reset else env.get("TWITTER_BEARER_TOKEN", ""),
+        allow_empty=True,
+    )
+
     redirect_input = prompt_value(
         "TWITTER_REDIRECT_URI",
         current="" if args.reset else env.get("TWITTER_REDIRECT_URI", ""),
@@ -597,6 +606,10 @@ def cmd_setup(env_path: Path, args: argparse.Namespace) -> int:
 
     write_env_file(env_path, env)
     print(f"\nSaved config to {env_path}")
+    if env.get("TWITTER_BEARER_TOKEN"):
+        print("App-only bearer token is configured.")
+    else:
+        print("No app-only bearer token set. Posting works, but reply scan workflows may be limited.")
     print("Run `app-settings` to see exact Twitter portal settings to apply.")
     print("Next step: run `auth-login` to launch browser OAuth and generate OAuth2 tokens.")
     if not args.skip_auth_login and prompt_yes_no("Launch OAuth2 login now?", default_yes=True):
@@ -660,6 +673,7 @@ def cmd_openclaw(env_path: Path, args: argparse.Namespace) -> int:
     print(f"Env exists: {status['env_exists']}")
     print(f"Has client id: {status['has_client_id']}")
     print(f"Has client secret: {status['has_client_secret']}")
+    print(f"Has app-only bearer token: {status['has_bearer_token']}")
     print(f"Has OAuth2 access token: {status['has_oauth2_access_token']}")
     print(f"Has OAuth2 refresh token: {status['has_oauth2_refresh_token']}")
 
@@ -959,6 +973,11 @@ def cmd_doctor(env_path: Path) -> int:
         return 1
 
     print("[PASS] Config values are present.")
+    if not get_env_value(env, "TWITTER_BEARER_TOKEN"):
+        print(
+            "[WARN] TWITTER_BEARER_TOKEN is missing. "
+            "App-only read/scan reply workflows may not work."
+        )
 
     try:
         cfg, env_values = resolve_config(env_path)
