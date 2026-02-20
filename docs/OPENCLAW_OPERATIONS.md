@@ -21,6 +21,7 @@ All commands exposed by `python src/twitter_helper.py`:
 - `run-twitter-helper`: one-command repair + unique post flow
 - `restart-setup`: reboot-safe setup/auth repair flow without posting
 - `browse-twitter`: read/search/user timeline/tweet fetch command
+- `mentions`: native mentions endpoint fetch via `/2/users/:id/mentions`
 - `inspire-tweets`: browse + generate concise draft tweet ideas
 - `reply-discover`: discover candidate tweets for replies
 - `reply-rank`: rank discovered candidates by relevance/quality
@@ -49,6 +50,7 @@ All commands exposed by `python src/twitter_helper.py`:
 | Thread post | `python src/twitter_helper.py thread --file examples/thread.txt` | OAuth2 tokens | thread posted |
 | Open Claw autopost | `python src/twitter_helper.py openclaw-autopost --text "..."` | OAuth2 tokens | tweet posted |
 | Browse Twitter search/user/tweet | `python src/twitter_helper.py browse-twitter ...` | Bearer token (or OAuth2 fallback) | console/JSON browse output |
+| Native mentions endpoint | `python src/twitter_helper.py mentions ...` | Bearer token (or OAuth2 fallback) | mentions JSON + console summary |
 | Generate inspiration drafts | `python src/twitter_helper.py inspire-tweets ...` | Bearer token (or OAuth2 fallback) | theme summary + drafts |
 | Reply discovery | `python src/twitter_helper.py reply-discover ...` | internet only | `data/discovered.json` |
 | Reply ranking | `python src/twitter_helper.py reply-rank ...` | none | `data/ranked.json` |
@@ -115,6 +117,7 @@ Use these direct intents from Open Claw:
 - "Post a unique tweet" -> `python src/twitter_helper.py post --text "<text>" --unique`
 - "Reply to this tweet ID" -> `python src/twitter_helper.py post --text "<text>" --in-reply-to <ID>`
 - "Browse mentions" -> `python src/twitter_helper.py browse-twitter --handle OpenClawAI --limit 20`
+- "Fetch mentions natively" -> `python src/twitter_helper.py mentions --limit 20 --json`
 - "Find inspiration from recent posts" -> `python src/twitter_helper.py inspire-tweets --topic "OpenClaw" --draft-count 5`
 - "Run mentions reply workflow draft-only" -> `python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1`
 - "Run mentions reply workflow and post one" -> `python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1 --post --max-posts 1`
@@ -127,6 +130,7 @@ Use absolute skill path for reliable execution:
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'OpenClaw helper is live 🦞'"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'Great point, thanks for sharing.' --in-reply-to 1892345678901234567"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default browse-twitter --handle OpenClawAI --limit 10 --json"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default mentions --limit 20 --json"`
 - `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1"`
 
 ## Recommended Workflows

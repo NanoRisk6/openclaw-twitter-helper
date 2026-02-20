@@ -33,6 +33,7 @@ pip install -r requirements.txt
 |---|---|
 | Post | `run-twitter-helper --account <name> post --text "..."` |
 | Reply | `run-twitter-helper --account <name> post --text "..." --in-reply-to <tweet_id>` |
+| Mentions | `run-twitter-helper --account <name> mentions --limit 20 [--since-id ID] [--json]` |
 | Browse mentions/search | `run-twitter-helper --account <name> browse-twitter --handle OpenClawAI --limit 20 --json` |
 | Diagnose | `run-twitter-helper --account <name> diagnose --json` |
 | Readiness check only | `run-twitter-helper --account <name> openclaw --json` |
@@ -58,4 +59,3 @@ system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-tw
 - Run `diagnose` before automated posting loops.
 - Use `--account` for persona/account separation.
 - Respect platform policy and avoid spammy duplicate posting.
-

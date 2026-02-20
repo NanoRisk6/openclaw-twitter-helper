@@ -36,6 +36,7 @@ TOKEN_CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
 TOKEN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 TOKENS_JSON_FALLBACK = TOKEN_CONFIG_DIR / "tokens.json"
 ACTIVE_ACCOUNT = "default"
+USER_ID_CACHE_TTL_SECONDS = 86400
 
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
@@ -424,6 +425,57 @@ def me_with_headers(cfg: Config) -> Tuple[int, Dict[str, object], Dict[str, str]
         "GET",
         f"{API_BASE}/users/me",
         {"Authorization": f"Bearer {cfg.access_token}"},
+    )
+
+
+def user_id_cache_file(account: str) -> Path:
+    return TOKEN_CONFIG_DIR / f"user_id_{account}.txt"
+
+
+def get_cached_user_id(account: str) -> str:
+    path = user_id_cache_file(account)
+    if not path.exists():
+        return ""
+    age = time.time() - path.stat().st_mtime
+    if age > USER_ID_CACHE_TTL_SECONDS:
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def set_cached_user_id(account: str, user_id: str) -> None:
+    path = user_id_cache_file(account)
+    path.write_text(user_id.strip(), encoding="utf-8")
+
+
+def resolve_current_user_id(env_path: Path, env: Dict[str, str]) -> str:
+    cached = get_cached_user_id(ACTIVE_ACCOUNT)
+    if cached:
+        return cached
+
+    auth_tokens: List[str] = []
+    bearer = get_env_value(env, "TWITTER_BEARER_TOKEN")
+    if bearer:
+        auth_tokens.append(bearer)
+    oauth_token = token_manager(env_path).get_access_token(env)
+    if oauth_token and oauth_token not in auth_tokens:
+        auth_tokens.append(oauth_token)
+
+    for token in auth_tokens:
+        status, body, _ = http_json_with_headers(
+            "GET",
+            f"{API_BASE}/users/me",
+            {"Authorization": f"Bearer {token}"},
+        )
+        if status == 200 and isinstance(body, dict):
+            data = body.get("data")
+            user_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+            if user_id:
+                set_cached_user_id(ACTIVE_ACCOUNT, user_id)
+                return user_id
+
+    raise TwitterHelperError(
+        "Failed to resolve current user id for mentions. "
+        "Ensure TWITTER_BEARER_TOKEN or OAuth2 access token is valid, then run `doctor`."
     )
 
 
@@ -888,6 +940,109 @@ def cmd_browse_twitter(env_path: Path, args: argparse.Namespace) -> int:
         print(f"Query: {args.query if args.query else default_query}")
     print(f"Results: {len(all_data)}")
     for i, t in enumerate(all_data, start=1):
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id", ""))
+        aid = str(t.get("author_id", ""))
+        username = users.get(aid, "unknown")
+        text = str(t.get("text", "")).replace("\n", " ").strip()
+        print(f"{i}. @{username} | {tid}")
+        print(f"   {text}")
+        if username != "unknown":
+            print(f"   https://x.com/{username}/status/{tid}")
+        else:
+            print(f"   https://x.com/i/web/status/{tid}")
+    return 0
+
+
+def cmd_mentions(env_path: Path, args: argparse.Namespace) -> int:
+    env = load_env_file(env_path)
+    bearer = get_read_bearer_token(env, env_path)
+    user_id = resolve_current_user_id(env_path, env)
+    limit = max(5, min(args.limit, 100))
+    max_pages = max(1, min(args.max_pages, 10))
+
+    all_data: List[Dict[str, object]] = []
+    users: Dict[str, str] = {}
+    media: Dict[str, Dict[str, object]] = {}
+    meta: Dict[str, object] = {}
+    next_token = None
+    pages = 0
+
+    while pages < max_pages:
+        params = [
+            f"max_results={limit}",
+            "tweet.fields=created_at,author_id,conversation_id,public_metrics,in_reply_to_user_id,referenced_tweets,attachments,text",
+            "expansions=author_id,attachments.media_keys",
+            "user.fields=username,name,profile_image_url",
+            "media.fields=preview_image_url,type,url",
+        ]
+        if args.since_id:
+            params.append(f"since_id={urllib.parse.quote(str(args.since_id))}")
+        if next_token:
+            params.append(f"pagination_token={urllib.parse.quote(next_token)}")
+
+        status, body = api_get_with_token(
+            f"{API_BASE}/users/{user_id}/mentions?" + "&".join(params),
+            bearer,
+        )
+        if status == 401:
+            raise TwitterHelperError(
+                "mentions unauthorized (401). "
+                "Check TWITTER_BEARER_TOKEN has v2 read access, or refresh OAuth2 with `auth-login`."
+            )
+        if status >= 400:
+            raise TwitterHelperError(
+                f"mentions failed ({status}): {json.dumps(body, ensure_ascii=False)}"
+            )
+
+        includes = body.get("includes") if isinstance(body, dict) else None
+        if isinstance(includes, dict):
+            if isinstance(includes.get("users"), list):
+                for u in includes["users"]:
+                    if isinstance(u, dict):
+                        users[str(u.get("id", ""))] = str(u.get("username", "unknown"))
+            if isinstance(includes.get("media"), list):
+                for m in includes["media"]:
+                    if isinstance(m, dict):
+                        media[str(m.get("media_key", ""))] = m
+
+        data = body.get("data") if isinstance(body, dict) else None
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict):
+                    all_data.append(row)
+
+        meta = body.get("meta") if isinstance(body, dict) and isinstance(body.get("meta"), dict) else {}
+        next_token = str(meta.get("next_token", "")) if meta.get("next_token") else None
+        pages += 1
+        if not next_token:
+            break
+
+    payload = {
+        "user_id": user_id,
+        "count": len(all_data),
+        "limit": limit,
+        "max_pages": max_pages,
+        "since_id": args.since_id,
+        "users": users,
+        "media": media,
+        "meta": meta,
+        "data": all_data,
+    }
+
+    if args.save:
+        out = Path(args.save)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Saved mentions output -> {out}")
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print(f"Mentions fetched: {len(all_data)}")
+    for i, t in enumerate(all_data[: args.preview], start=1):
         if not isinstance(t, dict):
             continue
         tid = str(t.get("id", ""))
@@ -2139,6 +2294,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_browse.add_argument("--json", action="store_true", help="Print raw JSON response")
 
+    p_mentions = sub.add_parser(
+        "mentions",
+        help="Fetch mentions via native /2/users/:id/mentions endpoint",
+    )
+    p_mentions.add_argument("--limit", type=int, default=20, help="Results per page (5-100)")
+    p_mentions.add_argument("--max-pages", type=int, default=1, help="Pagination pages to fetch (1-10)")
+    p_mentions.add_argument("--since-id", help="Only include mentions newer than this tweet ID")
+    p_mentions.add_argument("--save", help="Optional file path to save output JSON")
+    p_mentions.add_argument("--preview", type=int, default=5, help="Rows to print in non-JSON mode")
+    p_mentions.add_argument("--json", action="store_true", help="Print raw JSON output")
+
     p_inspire = sub.add_parser(
         "inspire-tweets",
         help="Browse Twitter and generate inspiration drafts from current conversation themes",
@@ -2240,6 +2406,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_restart_setup(env_path, args)
         if args.command == "browse-twitter":
             return cmd_browse_twitter(env_path, args)
+        if args.command == "mentions":
+            return cmd_mentions(env_path, args)
         if args.command == "inspire-tweets":
             return cmd_inspire_tweets(env_path, args)
         if args.command in {

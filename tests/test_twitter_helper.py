@@ -415,6 +415,44 @@ class PostSanitizeTests(unittest.TestCase):
         self.assertEqual(headers.get("x-rate-limit-remaining"), "99")
         self.assertGreaterEqual(calls["slept"], 1)
 
+    def test_cmd_mentions_json_uses_native_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            env_path = Path(td) / ".env"
+            env_path.write_text("TWITTER_BEARER_TOKEN=bearer\n", encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "limit": 20,
+                    "max_pages": 1,
+                    "since_id": None,
+                    "save": None,
+                    "preview": 5,
+                    "json": True,
+                },
+            )()
+
+            calls = {"urls": []}
+            original_resolve_user_id = twitter_helper.resolve_current_user_id
+            original_api_get_with_token = twitter_helper.api_get_with_token
+            try:
+                twitter_helper.resolve_current_user_id = lambda env_path, env: "u123"
+
+                def fake_api_get_with_token(url, bearer):
+                    calls["urls"].append(url)
+                    return 200, {"data": [], "meta": {}}
+
+                twitter_helper.api_get_with_token = fake_api_get_with_token
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    rc = twitter_helper.cmd_mentions(env_path, args)
+            finally:
+                twitter_helper.resolve_current_user_id = original_resolve_user_id
+                twitter_helper.api_get_with_token = original_api_get_with_token
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("/users/u123/mentions?" in u for u in calls["urls"]))
+
 
 if __name__ == "__main__":
     unittest.main()

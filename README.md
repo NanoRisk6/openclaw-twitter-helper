@@ -154,6 +154,13 @@ Browse Twitter (default: recent mentions query for OpenClawAI):
 python src/twitter_helper.py browse-twitter --handle OpenClawAI --limit 20
 ```
 
+Native mentions endpoint:
+
+```bash
+python src/twitter_helper.py mentions --limit 20 --json
+python src/twitter_helper.py mentions --since-id 2024835587052613989 --limit 20 --max-pages 2 --save data/mentions_latest.json
+```
+
 Browse with custom query:
 
 ```bash
