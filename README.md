@@ -59,6 +59,7 @@ $HELPER_DIR/run-twitter-helper openclaw-autopost --text "Open Claw is online"
 
 - Operations guide: `docs/OPENCLAW_OPERATIONS.md`
 - Wizard flow: `docs/wizard-flow.md`
+- Update log: `docs/OPENCLAW_UPDATE_LOG.md`
 
 
 ## Core Commands
