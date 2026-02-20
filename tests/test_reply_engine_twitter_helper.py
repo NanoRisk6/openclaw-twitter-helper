@@ -285,6 +285,16 @@ class VerifyReplyVisibleTests(unittest.TestCase):
         self.assertEqual(result["posted_replies"], 0)
         self.assertEqual(result["results"][0]["status"], "skipped_already_replied")
 
+    def test_generate_reply_many_ways_fallback_modes(self) -> None:
+        modes = ["direct", "curious", "technical"]
+        result = reply_helper.generate_reply_many_ways(
+            author="alice",
+            text="OpenClaw runs local models and avoids lock-in.",
+            modes=modes,
+        )
+        self.assertEqual(set(result.keys()), set(modes))
+        self.assertIn("@alice", result["direct"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,6 +60,7 @@ Dedicated reply engine tool:
 ```bash
 ./reply-engine -h
 ./reply-engine twitter-discovery --query "openclaw OR \"local ai\" lang:en -is:retweet min_faves:5" --approval-queue
+./reply-engine many-ways --tweet "https://x.com/OpenClawAI/status/2024820748980748765"
 ```
 
 ## Open Claw Docs

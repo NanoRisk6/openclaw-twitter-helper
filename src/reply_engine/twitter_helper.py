@@ -25,6 +25,14 @@ CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 APPROVAL_DIR = CONFIG_DIR / "approval_queue"
 APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_REPLY_MODES = [
+    "direct",
+    "curious",
+    "witty",
+    "technical",
+    "supportive",
+    "question",
+]
 
 
 def extract_tweet_id(tweet: str) -> str:
@@ -199,6 +207,76 @@ def _openai_drafts(author: str, text: str, n: int) -> Optional[List[str]]:
     return lines[:n] if lines else None
 
 
+def _openai_mode_drafts(author: str, text: str, modes: List[str]) -> Optional[Dict[str, str]]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from openai import OpenAI
+    except Exception:
+        return None
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    client = OpenAI(api_key=api_key)
+    modes_csv = ", ".join(modes)
+    prompt = (
+        "Create one concise Twitter reply per requested mode for OpenClawAI. "
+        "Each reply must stay on-topic, reference concrete tweet details, and be <= 240 chars. "
+        "Return JSON object mapping mode->reply text only. "
+        f"Author: @{author}\nTweet: {text}\nModes: {modes_csv}"
+    )
+    res = client.responses.create(model=model, input=prompt, temperature=0.8)
+    raw = (res.output_text or "").strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    out: Dict[str, str] = {}
+    for m in modes:
+        val = parsed.get(m)
+        if isinstance(val, str) and val.strip():
+            out[m] = val.strip()
+    return out if out else None
+
+
+def _focus_phrase(text: str, words: int = 8) -> str:
+    clean = " ".join(str(text).split())
+    parts = clean.split(" ")
+    return " ".join(parts[: max(3, words)]).strip()
+
+
+def _fallback_mode_drafts(author: str, text: str, modes: List[str]) -> Dict[str, str]:
+    focus = _focus_phrase(text)
+    out: Dict[str, str] = {}
+    for mode in modes:
+        if mode == "direct":
+            out[mode] = f"@{author} Good signal here. The core point on \"{focus}\" is worth doubling down on."
+        elif mode == "curious":
+            out[mode] = f"@{author} Curious how you’d stress-test \"{focus}\" over the next 30 days?"
+        elif mode == "witty":
+            out[mode] = f"@{author} \"{focus}\" is the kind of take that makes the timeline actually useful."
+        elif mode == "technical":
+            out[mode] = f"@{author} Practical move: define one metric tied to \"{focus}\", then run weekly iterations."
+        elif mode == "supportive":
+            out[mode] = f"@{author} Appreciate this. \"{focus}\" is exactly the kind of clear framing people need."
+        elif mode == "question":
+            out[mode] = f"@{author} If you had to pick one next step from \"{focus}\", what would you execute first?"
+        else:
+            out[mode] = f"@{author} Strong point on \"{focus}\". Curious where you’d take this next?"
+    return out
+
+
+def generate_reply_many_ways(author: str, text: str, modes: List[str]) -> Dict[str, str]:
+    clean_modes = [m.strip().lower() for m in modes if m and m.strip()]
+    if not clean_modes:
+        clean_modes = list(DEFAULT_REPLY_MODES)
+    llm = _openai_mode_drafts(author=author, text=text, modes=clean_modes)
+    if llm:
+        return {m: llm.get(m, "") for m in clean_modes if llm.get(m)}
+    return _fallback_mode_drafts(author=author, text=text, modes=clean_modes)
+
+
 def generate_reply_drafts(author: str, text: str, draft_count: int) -> List[str]:
     llm = _openai_drafts(author=author, text=text, n=draft_count)
     if llm:
@@ -212,6 +290,20 @@ def generate_reply_drafts(author: str, text: str, draft_count: int) -> List[str]
     while len(out) < draft_count:
         out.append(f"Good signal here @{author}. The repeatable part is what makes it scale.")
     return out
+
+
+def run_reply_many_ways(tweet: str, modes: List[str]) -> Dict[str, Any]:
+    tweet_id = extract_tweet_id(tweet)
+    client = build_client(require_write=False)
+    ctx = fetch_tweet_context(client=client, tweet_id=tweet_id)
+    variants = generate_reply_many_ways(author=ctx["author"], text=ctx["text"], modes=modes)
+    return {
+        "tweet_id": tweet_id,
+        "author": ctx["author"],
+        "tweet_text": ctx["text"],
+        "modes": list(variants.keys()),
+        "replies": variants,
+    }
 
 
 def post_reply(client: Any, tweet_id: str, text: str) -> str:

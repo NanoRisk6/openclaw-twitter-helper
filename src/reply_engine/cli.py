@@ -14,7 +14,9 @@ from .pipeline import (
 )
 from .twitter_helper import (
     approve_queue,
+    DEFAULT_REPLY_MODES,
     list_approval_queue,
+    run_reply_many_ways,
     run_discovery_workflow,
     run_mentions_workflow,
     run_twitter_helper,
@@ -59,6 +61,15 @@ def build_parser() -> argparse.ArgumentParser:
     tw.add_argument("--pick", type=int, default=1, help="1-based draft index to post")
     tw.add_argument("--dry-run", action="store_true", help="generate drafts but do not post")
     tw.add_argument("--log-path", default="data/replies.jsonl", help="jsonl log output path")
+
+    many = sub.add_parser("many-ways", help="Generate multiple stylistic reply options for one tweet")
+    many.add_argument("--tweet", required=True, help="tweet URL or tweet ID")
+    many.add_argument(
+        "--modes",
+        default=",".join(DEFAULT_REPLY_MODES),
+        help="comma-separated modes (direct,curious,witty,technical,supportive,question)",
+    )
+    many.add_argument("--json", action="store_true", help="print JSON output")
 
     e2e = sub.add_parser("twitter-e2e", help="End-to-end mentions workflow for OpenClaw")
     e2e.add_argument("--handle", default="OpenClawAI", help="target account handle")
@@ -154,6 +165,21 @@ def main() -> None:
         else:
             print(f"posted: {result['reply_url']}")
             print(f"log: {result['log_path']}")
+        return
+
+    if args.command == "many-ways":
+        result = run_reply_many_ways(
+            tweet=args.tweet,
+            modes=[x.strip() for x in args.modes.split(",") if x.strip()],
+        )
+        if args.json:
+            import json
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        print(f"tweet: {result['tweet_id']} (@{result['author']})")
+        print("reply variants:")
+        for mode, text in result["replies"].items():
+            print(f"- {mode}: {text}")
         return
 
     if args.command == "twitter-e2e":
