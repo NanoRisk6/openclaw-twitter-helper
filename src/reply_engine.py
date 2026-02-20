@@ -25,6 +25,7 @@ REPLY_CLI_COMMANDS = {
     "rank",
     "ideas",
     "run",
+    "twitter-engine",
     "twitter-helper",
     "many-ways",
     "twitter-e2e",

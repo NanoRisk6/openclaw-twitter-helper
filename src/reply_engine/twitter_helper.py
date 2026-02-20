@@ -25,7 +25,8 @@ except Exception:  # optional dependency fallback
 
 
 TWEET_ID_RE = re.compile(r"(?:status/)?(\d{10,30})")
-CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
+CONFIG_DIR = Path.home() / ".config" / "twitter-engine"
+LEGACY_CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 APPROVAL_DIR = CONFIG_DIR / "approval_queue"
 APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,7 @@ DEFAULT_REPLY_MODES = [
     "supportive",
     "question",
 ]
+MAX_REPLY_CHARS = 240
 WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_'-]{2,}")
 STOPWORDS = {
     "about",
@@ -72,6 +74,51 @@ STOPWORDS = {
     "your",
 }
 NUMERIC_TOKEN_RE = re.compile(r"\b\d+(?:[.,]\d+)?%?\b")
+TICKER_RE = re.compile(r"\$[A-Za-z][A-Za-z0-9]{1,8}\b")
+HANDLE_RE = re.compile(r"@[A-Za-z0-9_]{2,15}\b")
+INFINITE_REPLY_NICHES: Dict[str, List[str]] = {
+    "fragility_ai_builders": [
+        "agent",
+        "openclaw",
+        "pipeline",
+        "context",
+        "latency",
+        "auth",
+        "dedupe",
+        "local ai",
+        "inference",
+    ],
+    "prediction_markets": [
+        "prediction",
+        "market",
+        "kalshi",
+        "polymarket",
+        "odds",
+        "edge",
+        "arb",
+        "spread",
+        "book",
+    ],
+    "autonomous_trading": [
+        "trading",
+        "sol",
+        "execution",
+        "slippage",
+        "liquidity",
+        "signal",
+        "risk",
+        "position",
+        "exchange",
+    ],
+}
+TENSION_TEMPLATES = [
+    "Fragility probe: {mirror}. Hidden fragility is usually {edge}. What fails first when load doubles?",
+    "Edge question: {mirror}. The edge is rarely tooling, usually {edge}. Where does advantage decay first?",
+    "Regime test: {mirror}. Works in this regime; breaks when {edge}. What changes in chop vs trend?",
+    "Incentive cut: {mirror}. Incentives around {edge} decide outcomes more than architecture. Who actually captures upside?",
+    "Deletion thesis: {mirror}. If you deleted 40% of this, {edge} would probably improve. Which component gets cut first?",
+    "Metric anchor: {mirror}. If {edge} is real, one metric should move first. Which one did you see move?",
+]
 
 
 def extract_tweet_id(tweet: str) -> str:
@@ -92,31 +139,42 @@ def _required_env() -> Dict[str, Optional[str]]:
     load_dotenv()
     bearer = os.getenv("TWITTER_BEARER_TOKEN") or os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN")
     if not bearer and keyring is not None:
-        account = os.getenv("OPENCLAW_TWITTER_ACCOUNT", "default")
-        service = f"openclaw-twitter-helper:{account}"
-        try:
-            raw = keyring.get_password(service, "oauth_tokens")
-            if raw:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    bearer = str(parsed.get("access_token", "")).strip() or bearer
-        except Exception:
-            pass
+        account = os.getenv("TWITTER_ENGINE_ACCOUNT") or os.getenv("OPENCLAW_TWITTER_ACCOUNT", "default")
+        services = [f"twitter-engine:{account}", f"openclaw-twitter-helper:{account}"]
+        for service in services:
+            try:
+                raw = keyring.get_password(service, "oauth_tokens")
+                if raw:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        bearer = str(parsed.get("access_token", "")).strip() or bearer
+                        if bearer:
+                            break
+            except Exception:
+                continue
     return {"TWITTER_BEARER_TOKEN": bearer}
 
 
 def _account_name() -> str:
-    return os.getenv("OPENCLAW_TWITTER_ACCOUNT", "default")
+    return os.getenv("TWITTER_ENGINE_ACCOUNT") or os.getenv("OPENCLAW_TWITTER_ACCOUNT", "default")
 
 
 def _last_mention_path(account: Optional[str] = None) -> Path:
     acct = account or _account_name()
-    return CONFIG_DIR / f"last_mention_id_{acct}.txt"
+    path = CONFIG_DIR / f"last_mention_id_{acct}.txt"
+    if path.exists():
+        return path
+    legacy = LEGACY_CONFIG_DIR / f"last_mention_id_{acct}.txt"
+    return legacy if legacy.exists() else path
 
 
 def _replied_log_path(account: Optional[str] = None) -> Path:
     acct = account or _account_name()
-    return CONFIG_DIR / f"replied_to_{acct}.jsonl"
+    path = CONFIG_DIR / f"replied_to_{acct}.jsonl"
+    if path.exists():
+        return path
+    legacy = LEGACY_CONFIG_DIR / f"replied_to_{acct}.jsonl"
+    return legacy if legacy.exists() else path
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -170,9 +228,12 @@ def build_client() -> Any:
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
+    wait_raw = str(os.getenv("TWITTER_WAIT_ON_RATE_LIMIT", "0")).strip().lower()
+    wait_on_rate_limit = wait_raw in {"1", "true", "yes", "on"}
+
     return tweepy.Client(
         bearer_token=env["TWITTER_BEARER_TOKEN"],
-        wait_on_rate_limit=True,
+        wait_on_rate_limit=wait_on_rate_limit,
     )
 
 
@@ -244,13 +305,79 @@ def fetch_tweet_context(client: Any, tweet_id: str) -> Dict[str, Any]:
 
 
 def _templates(author: str, text: str) -> List[str]:
-    return [
-        f"@{author} This lands. I keep noticing progress compounds when we stay with one honest signal long enough to learn from it.",
-        f"@{author} I like this framing. It reminds me that clarity beats noise when building in public.",
-        f"@{author} This feels practical, not performative. That difference is where most momentum seems to come from.",
-        f"@{author} I’ve been reflecting on this too: consistency is less about repetition and more about direction.",
-        f"@{author} This is a useful prompt. What changed for you once this clicked in real execution?",
+    focus = _focus_phrase(text, words=12)
+    quote = _quote_fragment(text, max_words=10)
+    url = _extract_first_url(text)
+    anchored_url = f" according to {url}" if url else ""
+    frame = _source_frame(text)
+    key_claim = frame["key_claim"]
+    ent = frame["entity"] or "the core claim"
+    tone = frame["tone"]
+
+    drafts = [
+        f"@{author} per the post: {quote}. Counterintuitively, {ent} breaks at handoff clarity before model quality. Which failure mode bites first in production: drift, retries, or noisy context?{anchored_url}",
+        f"@{author} from your post: {key_claim}. Operator test: one KPI + one guardrail for 7 days. What baseline are you tracking?",
+        f"@{author} thread signal: {focus}. Data shows teams win by deleting branches, then tightening verification. Which stage in your flow has the highest error density?",
+        f"@{author} per the post, the bottleneck is execution quality. If you fixed one stage this week, which one compounds output fastest?",
+        f"@{author} according to this claim: {quote}. Specific improvements show up when pass/fail is tracked by stage. Do you measure stage-level failures yet?",
+        f"@{author} data shows leverage comes from narrowing scope before scaling. What single constraint would you enforce first?",
+        f"@{author} thread: {key_claim}. {tone} is clear here; operationally, what metric moves first when this gets fixed?",
+        f"@{author} per the post, {ent} decisions degrade when context gets broad. Would you trade volume for clearer checkpoints this week?",
     ]
+    return [_trim_reply(d) for d in drafts]
+
+
+def _trim_reply(text: str, limit: int = MAX_REPLY_CHARS) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    if len(clean) <= limit:
+        return clean
+    if limit <= 3:
+        return clean[:limit]
+    return clean[: limit - 3].rstrip() + "..."
+
+
+def _extract_first_url(text: str) -> str:
+    m = re.search(r"https?://\S+", str(text or ""))
+    if not m:
+        return ""
+    raw = m.group(0).rstrip(".,)")
+    return raw
+
+
+def _quote_fragment(text: str, max_words: int = 10) -> str:
+    clean = " ".join(str(text or "").split()).strip()
+    clean = re.sub(r"https?://\S+", "", clean)
+    clean = re.sub(r"@[A-Za-z0-9_]+", "", clean)
+    clean = re.sub(r"#[A-Za-z0-9_]+", "", clean)
+    clean = clean.replace('"', "").replace("“", "").replace("”", "")
+    if not clean:
+        return "key point"
+    words = clean.split(" ")
+    frag = " ".join(words[: max(4, max_words)]).strip()
+    return frag
+
+
+def _source_frame(text: str) -> Dict[str, str]:
+    clean = " ".join(str(text or "").split()).strip()
+    lowered = clean.lower()
+    first_sentence = re.split(r"[.!?]\s+", clean, maxsplit=1)[0].strip() if clean else ""
+    key_claim = first_sentence or clean[:100] or "core claim"
+    handles = HANDLE_RE.findall(clean)
+    tickers = TICKER_RE.findall(clean)
+    entity = ""
+    if tickers:
+        entity = tickers[0]
+    elif handles:
+        entity = handles[0]
+    else:
+        words = [w for w in WORD_RE.findall(clean) if len(w) >= 4]
+        entity = words[0] if words else ""
+    tone = "question" if "?" in clean else "assertion"
+    if any(x in lowered for x in ("bug", "broken", "issue", "fail", "error")):
+        tone = "problem-report"
+    elif any(x in lowered for x in ("launch", "shipped", "release", "announced")):
+        tone = "launch-update"
+    return {"key_claim": key_claim, "entity": entity, "tone": tone}
 
 
 def _openai_drafts(author: str, text: str, n: int) -> Optional[List[str]]:
@@ -340,24 +467,239 @@ def has_ungrounded_numeric_claim(candidate: str, source_text: str) -> bool:
     return any(tok not in src_tokens for tok in cand_tokens)
 
 
+def _parent_grounding_match(reply_text: str, parent_text: str) -> bool:
+    reply = str(reply_text or "").lower()
+    parent = str(parent_text or "")
+    if not reply or not parent:
+        return False
+
+    numbers = [m.group(0) for m in NUMERIC_TOKEN_RE.finditer(parent)]
+    if any(num and num in reply for num in numbers[:6]):
+        return True
+
+    phrase_candidates: List[str] = []
+    quote = _quote_fragment(parent, max_words=8).lower().strip()
+    if len(quote) >= 12:
+        phrase_candidates.append(quote)
+    first_sentence = re.split(r"[.!?]\s+", " ".join(parent.split()), maxsplit=1)[0].strip().lower()
+    if len(first_sentence) >= 16:
+        phrase_candidates.append(" ".join(first_sentence.split()[:8]))
+
+    return any(p and p in reply for p in phrase_candidates)
+
+
+def _niche_terms(lane: str) -> List[str]:
+    key = str(lane or "").strip().lower()
+    if not key:
+        return []
+    return list(INFINITE_REPLY_NICHES.get(key, []))
+
+
+def _niche_relevance(parent_text: str, lane: str) -> bool:
+    terms = _niche_terms(lane)
+    if not terms:
+        return True
+    hay = str(parent_text or "").lower()
+    return any(t in hay for t in terms)
+
+
+def _tension_edge(parent_text: str) -> str:
+    txt = str(parent_text or "").lower()
+    if any(x in txt for x in ("auth", "token", "oauth")):
+        return "silent auth drift"
+    if any(x in txt for x in ("prediction", "market", "kalshi", "polymarket", "odds")):
+        return "shared feed convergence"
+    if any(x in txt for x in ("sol", "trading", "execution", "liquidity")):
+        return "execution quality under volatility"
+    if any(x in txt for x in ("agent", "pipeline", "context", "inference")):
+        return "context drift under scale"
+    return "operator incentives under pressure"
+
+
+def generate_tension_reply(author: str, parent_text: str, lane: str = "") -> str:
+    mirror = _focus_phrase(parent_text, words=11).rstrip(".!? ")
+    edge = _tension_edge(parent_text)
+    idx = sum(ord(ch) for ch in (author + parent_text + lane)) % len(TENSION_TEMPLATES)
+    body = TENSION_TEMPLATES[idx].format(mirror=mirror, edge=edge)
+    txt = f"@{author} {body}"
+    if "?" not in txt:
+        txt = f"{txt} What would break first?"
+    return _trim_reply(txt, limit=MAX_REPLY_CHARS)
+
+
+def reply_frog_score(
+    reply_text: str,
+    parent_text: str,
+    voice: str = "auto",
+    style: str = "auto",
+    viral_boost: bool = False,
+    lane: str = "",
+) -> Dict[str, Any]:
+    main_helper = _load_main_helper()
+    scorer = getattr(main_helper, "frog_judge_score", None)
+    if callable(scorer):
+        base = float(
+            scorer(
+                str(reply_text or ""),
+                str(voice or "auto"),
+                style=str(style or "auto"),
+                viral_boost=bool(viral_boost),
+            )
+        )
+    else:
+        base = 50.0
+
+    grounded = _parent_grounding_match(reply_text=reply_text, parent_text=parent_text)
+    if grounded:
+        final = min(100.0, base + 8.0)
+    else:
+        final = max(0.0, base - 18.0)
+    if "?" not in str(reply_text or ""):
+        final = max(0.0, final - 25.0)
+    if _niche_relevance(parent_text=parent_text, lane=lane):
+        final = min(100.0, final + 6.0)
+    return {"score": round(final, 1), "grounded": grounded, "base": round(base, 1)}
+
+
+def infinite_loop_judge_score(
+    reply_text: str,
+    parent_text: str,
+    voice: str = "based",
+    style: str = "contrarian",
+    lane: str = "fragility_ai_builders",
+    viral_boost: bool = True,
+) -> Dict[str, Any]:
+    row = reply_frog_score(
+        reply_text=reply_text,
+        parent_text=parent_text,
+        voice=voice,
+        style=style,
+        viral_boost=viral_boost,
+        lane=lane,
+    )
+    text = str(reply_text or "").lower()
+    if any(x in text for x in ("what fails first", "who actually captures upside", "where does advantage decay")):
+        row["score"] = round(min(100.0, float(row.get("score", 0.0)) + 5.0), 1)
+    return row
+
+
+def generate_reflective_reply_text(
+    author: str,
+    parent_text: str,
+    context_text: str = "",
+    voice: str = "auto",
+    style: str = "auto",
+    viral_pack: str = "",
+    lane: str = "",
+    ensemble_size: int = 5,
+    judge_threshold: float = 85.0,
+    viral_boost: bool = False,
+    anti_boring: bool = True,
+    sharpen: bool = True,
+    max_attempts: int = 7,
+) -> str:
+    main_helper = _load_main_helper()
+    generator = getattr(main_helper, "generate_reflective_post_text", None)
+    if not callable(generator):
+        return ""
+
+    settings = {
+        "voice": voice,
+        "style": style,
+        "ensemble": ensemble_size,
+        "judge_threshold": judge_threshold,
+        "viral_boost": viral_boost,
+        "anti_boring": anti_boring,
+        "sharpen": sharpen,
+    }
+    pack_resolver = getattr(main_helper, "apply_viral_pack", None)
+    if callable(pack_resolver):
+        settings = dict(pack_resolver(settings, viral_pack))
+
+    topic = _focus_phrase(parent_text, words=8) or "reply context"
+    inspirations = [x for x in [parent_text, context_text] if str(x or "").strip()]
+    raw = str(
+        generator(
+            topic=topic,
+            inspiration_texts=inspirations,
+            style=str(settings.get("style", style) or "auto"),
+            voice=str(settings.get("voice", voice) or "auto"),
+            viral_pack=str(viral_pack or ""),
+            anti_boring=bool(settings.get("anti_boring", anti_boring)),
+            sharpen=bool(settings.get("sharpen", sharpen)),
+            judge_threshold=float(settings.get("judge_threshold", judge_threshold)),
+            max_attempts=max(1, int(max_attempts)),
+            ensemble_size=max(1, min(8, int(settings.get("ensemble", ensemble_size)))),
+            viral_boost=bool(settings.get("viral_boost", viral_boost)),
+        )
+    ).strip()
+    if not raw:
+        return ""
+
+    candidates: List[str] = []
+    if not raw.startswith("@"):
+        raw = f"@{author} {raw}".strip()
+    if not _parent_grounding_match(reply_text=raw, parent_text=parent_text):
+        anchor = _quote_fragment(parent_text, max_words=7)
+        raw = f"@{author} per the post: {anchor}. {raw}"
+    candidates.append(_trim_reply(raw, limit=MAX_REPLY_CHARS))
+
+    if str(viral_pack or "").lower() == "infinite":
+        candidates.append(generate_tension_reply(author=author, parent_text=parent_text, lane=lane))
+
+    best = candidates[0]
+    best_score = -1.0
+    for c in candidates:
+        judged = infinite_loop_judge_score(
+            reply_text=c,
+            parent_text=parent_text,
+            voice=str(settings.get("voice", voice) or "based"),
+            style=str(settings.get("style", style) or "contrarian"),
+            lane=str(lane or ""),
+            viral_boost=bool(settings.get("viral_boost", viral_boost)),
+        )
+        s = float(judged.get("score", 0.0))
+        if s > best_score:
+            best = c
+            best_score = s
+    return _trim_reply(best, limit=MAX_REPLY_CHARS)
+
+
 def _fallback_mode_drafts(author: str, text: str, modes: List[str]) -> Dict[str, str]:
     focus = _focus_phrase(text)
+    quote = _quote_fragment(text, max_words=9)
+    url = _extract_first_url(text)
     out: Dict[str, str] = {}
     for mode in modes:
         if mode == "direct":
-            out[mode] = f"@{author} Good signal here. The core point on \"{focus}\" is worth doubling down on."
+            out[mode] = _trim_reply(
+                f"@{author} per the post: {quote}. The core issue sounds operational, not model-side. What is the first measurable fix you would ship?"
+            )
         elif mode == "curious":
-            out[mode] = f"@{author} Curious how you’d stress-test \"{focus}\" over the next 30 days?"
+            out[mode] = _trim_reply(
+                f"@{author} according to this thread, {focus}. How would you stress-test that over 30 days with one metric?"
+            )
         elif mode == "witty":
-            out[mode] = f"@{author} \"{focus}\" is the kind of take that makes the timeline actually useful."
+            out[mode] = _trim_reply(
+                f"@{author} thread signal: {quote}. Rare post where signal beats noise. What breaks first if adoption 10x's next month?"
+            )
         elif mode == "technical":
-            out[mode] = f"@{author} Practical move: define one metric tied to \"{focus}\", then run weekly iterations."
+            tail = f" per the link {url}" if url else ""
+            out[mode] = _trim_reply(
+                f"@{author} practical move: define one metric tied to \"{focus}\" and one hard failure threshold, then iterate weekly.{tail}"
+            )
         elif mode == "supportive":
-            out[mode] = f"@{author} Appreciate this. \"{focus}\" is exactly the kind of clear framing people need."
+            out[mode] = _trim_reply(
+                f"@{author} appreciate the concrete framing here. specific improvements become possible once the bottleneck is named."
+            )
         elif mode == "question":
-            out[mode] = f"@{author} If you had to pick one next step from \"{focus}\", what would you execute first?"
+            out[mode] = _trim_reply(
+                f"@{author} if you had to choose one next step from \"{focus}\", what would you execute first and how would you verify it?"
+            )
         else:
-            out[mode] = f"@{author} Strong point on \"{focus}\". Curious where you’d take this next?"
+            out[mode] = _trim_reply(
+                f"@{author} strong point on \"{focus}\". per the post, what is the highest-leverage next action?"
+            )
     return out
 
 
@@ -466,10 +808,11 @@ def generate_reply_drafts(author: str, text: str, draft_count: int) -> List[str]
     if llm:
         return llm
 
-    # Lean-mode fallback: produce one specific, mention-tied reply instead of a generic template.
+    # Lean-mode fallback: produce one specific, mention-tied reply instead of generic boilerplate.
     if draft_count <= 1:
-        focus = _focus_phrase(text, words=10)
-        return [f"@{author} {focus} — best move is one clear action, then iterate from real feedback."]
+        quote = _quote_fragment(text, max_words=9)
+        one = f"@{author} per the post: {quote}. What is the one measurable change you would ship first?"
+        return [_trim_reply(one)]
 
     drafts = _templates(author=author, text=text)
     if draft_count <= len(drafts):
@@ -477,7 +820,8 @@ def generate_reply_drafts(author: str, text: str, draft_count: int) -> List[str]
 
     out = list(drafts)
     while len(out) < draft_count:
-        out.append(f"Good signal here @{author}. The repeatable part is what makes it scale.")
+        focus = _focus_phrase(text, words=10)
+        out.append(_trim_reply(f"@{author} thread: {focus}. Where would you place the first hard guardrail?"))
     return out
 
 

@@ -30,7 +30,7 @@ def _parse_keywords(raw: str) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="OpenClaw reply engine helper")
+    p = argparse.ArgumentParser(description="Twitter Engine reply helper")
     sub = p.add_subparsers(dest="command", required=True)
 
     discover = sub.add_parser("discover", help="Discover candidate conversations")
@@ -57,7 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--include-weak", action="store_true", help="include low-relevance matches")
     run.add_argument("--output", required=True, help="markdown output path")
 
-    tw = sub.add_parser("twitter-helper", help="Generate and optionally post a Twitter reply")
+    tw = sub.add_parser(
+        "twitter-engine",
+        aliases=["twitter-helper"],
+        help="Generate and optionally post a Twitter reply",
+    )
     tw.add_argument("--tweet", required=True, help="tweet URL or tweet ID")
     tw.add_argument("--draft-count", type=int, default=5)
     tw.add_argument("--pick", type=int, default=1, help="1-based draft index to post")
@@ -177,7 +181,7 @@ def main() -> None:
         print(f"discovered {len(candidates)} | wrote ideas -> {out}")
         return
 
-    if args.command == "twitter-helper":
+    if args.command in {"twitter-engine", "twitter-helper"}:
         result = run_twitter_helper(
             tweet=args.tweet,
             draft_count=args.draft_count,

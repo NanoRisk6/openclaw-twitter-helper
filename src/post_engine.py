@@ -13,23 +13,27 @@ POST_COMMANDS = {
     "auto-diagnose",
     "app-settings",
     "walkthrough",
-    "openclaw-status",
+    "engine-status",
     "check-auth",
     "post",
-    "openclaw-autopost",
-    "openclaw",
+    "engine-autopost",
+    "engine-check",
     "thread",
-    "run-twitter-helper",
+    "twitter-engine",
     "restart-setup",
 }
 
 POST_ALIASES = {
     "login": "auth-login",
     "diag": "auto-diagnose",
-    "status": "openclaw-status",
+    "status": "engine-status",
     "publish": "post",
     "publish-thread": "thread",
     "quickstart": "restart-setup",
+    "openclaw-status": "engine-status",
+    "openclaw-autopost": "engine-autopost",
+    "openclaw": "engine-check",
+    "run-twitter-helper": "twitter-engine",
 }
 
 REPLY_SIDE_COMMANDS = {

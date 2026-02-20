@@ -5,7 +5,7 @@ This file tracks major OpenClaw-facing helper updates in reverse chronological o
 ## 2026-02-20
 
 ### `8ca3eba` - JSONL dedupe + discovery tone
-- Added persistent reply dedupe log: `~/.config/openclaw-twitter-helper/replied_to_<account>.jsonl` (90-day window).
+- Added persistent reply dedupe log: `~/.config/twitter-engine/replied_to_<account>.jsonl` (90-day window).
 - Added discovery-intent generation mode (`is_discovery=True`) so proactive replies read as intentional, not reactive spam.
 - Integrated with existing double-reply guards.
 
@@ -20,9 +20,9 @@ This file tracks major OpenClaw-facing helper updates in reverse chronological o
 ### `6fa5e36` - Unique applicable reply selection
 - Added reply selection layer requiring specificity to tweet/thread context.
 - Added 24h phrase-prefix dedupe memory:
-  - `~/.config/openclaw-twitter-helper/recent_replies.jsonl`
+  - `~/.config/twitter-engine/recent_replies.jsonl`
 - Added optional persona file support:
-  - `~/.config/openclaw-twitter-helper/persona/openclaw.md`
+  - `~/.config/twitter-engine/persona/twitter-engine.md`
 
 ### `7c65092` - Duplicate-content auto-retry for replies
 - Added automatic one-time retry with unique visible suffix when reply post fails with duplicate-content `403`.

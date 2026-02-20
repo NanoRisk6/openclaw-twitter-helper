@@ -12,13 +12,13 @@ All commands exposed by `python src/twitter_helper.py`:
 - `auto-diagnose`: combined posting + reply diagnosis with optional OAuth2 self-heal
 - `app-settings`: prints exact Twitter Developer Portal settings to copy
 - `walkthrough`: prints full setup/post flow in one place
-- `openclaw-status`: machine-readable status output for automation
+- `engine-status`: machine-readable status output for automation
 - `check-auth`: validates current auth and prints current account identity
 - `post`: posts one tweet, file-based tweet, or reply tweet
-- `openclaw-autopost`: Open Claw-oriented single post command
-- `openclaw`: readiness check command for Open Claw orchestration
+- `engine-autopost`: Open Claw-oriented single post command
+- `engine-check`: readiness check command for Open Claw orchestration
 - `thread`: posts multi-part thread from file
-- `run-twitter-helper`: one-command repair + unique post flow
+- `twitter-engine`: one-command repair + unique post flow
 - `restart-setup`: reboot-safe setup/auth repair flow without posting
 - `browse-twitter`: read/search/user timeline/tweet fetch command
 - `mentions`: native mentions endpoint fetch via `/2/users/:id/mentions`
@@ -44,16 +44,16 @@ All commands exposed by `python src/twitter_helper.py`:
 | Auto diagnose (posting + reply) | `python src/twitter_helper.py auto-diagnose` | env + optional network | combined PASS/FAIL + fix steps |
 | Print portal settings | `python src/twitter_helper.py app-settings` | Client ID/Secret recommended | exact values to copy into Twitter app |
 | Print walkthrough | `python src/twitter_helper.py walkthrough` | none | setup/post instructions |
-| Readiness status JSON | `python src/twitter_helper.py openclaw --json` | none (reads `.env`) | machine-readable readiness |
-| Automation status JSON | `python src/twitter_helper.py openclaw-status` | none (reads `.env`) | compact JSON status for orchestration |
+| Readiness status JSON | `python src/twitter_helper.py engine-check --json` | none (reads `.env`) | machine-readable readiness |
+| Automation status JSON | `python src/twitter_helper.py engine-status` | none (reads `.env`) | compact JSON status for orchestration |
 | Validate auth/account | `python src/twitter_helper.py check-auth` | OAuth2 tokens | account identity + validation result |
-| One-command post flow | `python src/twitter_helper.py run-twitter-helper --text "..."` | OAuth2 tokens | one unique tweet posted |
+| One-command post flow | `python src/twitter_helper.py twitter-engine --text "..."` | OAuth2 tokens | one unique tweet posted |
 | Restart recovery (no post) | `python src/twitter_helper.py restart-setup` | OAuth2/browser if needed | repaired auth/setup |
 | Post single tweet | `python src/twitter_helper.py post --text "..."` | OAuth2 tokens | tweet posted |
 | Post with media | `python src/twitter_helper.py post --text "..." --media <path-or-url[,path-or-url...]>` | OAuth2 tokens + `media.write` scope | tweet + 1-5 images posted |
 | Reply to tweet | `python src/twitter_helper.py post --text "..." --in-reply-to <ID>` | OAuth2 tokens + visible target | reply posted |
 | Thread post | `python src/twitter_helper.py thread --file examples/thread.txt` | OAuth2 tokens | thread posted |
-| Open Claw autopost | `python src/twitter_helper.py openclaw-autopost --text "..."` | OAuth2 tokens | tweet posted |
+| Open Claw autopost | `python src/twitter_helper.py engine-autopost --text "..."` | OAuth2 tokens | tweet posted |
 | Browse Twitter search/user/tweet | `python src/twitter_helper.py browse-twitter ...` | Bearer token (or OAuth2 fallback) | console/JSON browse output |
 | Native mentions endpoint | `python src/twitter_helper.py mentions ...` | Bearer token (or OAuth2 fallback) | mentions JSON + console summary |
 | Proactive search | `python src/twitter_helper.py search --query "..." ...` | Bearer token (or OAuth2 fallback) | ranked discovery feed |
@@ -92,18 +92,18 @@ Optional for LLM draft generation:
 
 From repo root:
 
-- `./run-twitter-helper restart`
-- `./run-twitter-helper recover`
-- `./run-twitter-helper fix`
-- `./run-twitter-helper reboot`
-- `./run-twitter-helper openclaw`
-- `./run-twitter-helper diagnose`
-- `./run-twitter-helper openclaw-autopost --text "Open Claw update"`
-- `./run-twitter-helper browse-twitter --mode search --query "openclaw" --limit 20`
-- `./run-twitter-helper inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json`
-- `./run-twitter-helper --account default diagnose`
-- `./run-twitter-helper --account default reply-discover-run --watchlist default --approval-queue --max-tweets 8`
-- `./run-twitter-helper --account default reply-approve --list`
+- `./twitter-engine restart`
+- `./twitter-engine recover`
+- `./twitter-engine fix`
+- `./twitter-engine reboot`
+- `./twitter-engine engine-check`
+- `./twitter-engine diagnose`
+- `./twitter-engine engine-autopost --text "Open Claw update"`
+- `./twitter-engine browse-twitter --mode search --query "openclaw" --limit 20`
+- `./twitter-engine inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json`
+- `./twitter-engine --account default diagnose`
+- `./twitter-engine --account default reply-discover-run --watchlist default --approval-queue --max-tweets 8`
+- `./twitter-engine --account default reply-approve --list`
 - `./reply-engine twitter-discovery --query "openclaw OR local ai lang:en -is:retweet min_faves:5" --approval-queue`
 
 Wrapper passes through all subcommands and has aliases:
@@ -114,10 +114,10 @@ Wrapper passes through all subcommands and has aliases:
 
 Use these direct intents from Open Claw:
 
-- "Run Twitter Helper setup" -> `./run-twitter-helper restart`
-- "Check if Twitter posting is healthy" -> `./run-twitter-helper openclaw`
-- "Auto-diagnose posting/replying issues" -> `./run-twitter-helper diagnose`
-- "Post this tweet" -> `./run-twitter-helper openclaw-autopost --text "<text>"`
+- "Run Twitter Helper setup" -> `./twitter-engine restart`
+- "Check if Twitter posting is healthy" -> `./twitter-engine engine-check`
+- "Auto-diagnose posting/replying issues" -> `./twitter-engine diagnose`
+- "Post this tweet" -> `./twitter-engine engine-autopost --text "<text>"`
 - "Post a unique tweet" -> `python src/twitter_helper.py post --text "<text>" --unique`
 - "Reply to this tweet ID" -> `python src/twitter_helper.py post --text "<text>" --in-reply-to <ID>`
 - "Browse mentions" -> `python src/twitter_helper.py browse-twitter --handle OpenClawAI --limit 20`
@@ -132,15 +132,15 @@ Use these direct intents from Open Claw:
 
 Use absolute skill path for reliable execution:
 
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default diagnose --json"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'OpenClaw helper is live 🦞'"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'OpenClaw chart update 🦞' --media ./chart.png --dry-run"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'Great point, thanks for sharing.' --in-reply-to 1892345678901234567"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default browse-twitter --handle OpenClawAI --limit 10 --json"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default mentions --limit 20 --json"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-discover-run --watchlist default --approval-queue --max-tweets 8"`
-- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-approve --list"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default diagnose --json"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default post --text 'OpenClaw helper is live 🦞'"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default post --text 'OpenClaw chart update 🦞' --media ./chart.png --dry-run"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default post --text 'Great point, thanks for sharing.' --in-reply-to 1892345678901234567"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default browse-twitter --handle OpenClawAI --limit 10 --json"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default mentions --limit 20 --json"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default reply-discover-run --watchlist default --approval-queue --max-tweets 8"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./twitter-engine --account default reply-approve --list"`
 
 ## Recommended Workflows
 
@@ -153,24 +153,24 @@ Use absolute skill path for reliable execution:
 
 ### 2. After reboot
 
-1. `./run-twitter-helper restart`
-2. `./run-twitter-helper openclaw`
+1. `./twitter-engine restart`
+2. `./twitter-engine engine-check`
 
 ### 3. Inspiration + post loop
 
-1. `./run-twitter-helper inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json`
+1. `./twitter-engine inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json`
 2. Select one draft
-3. `./run-twitter-helper openclaw-autopost --text "<draft>"`
+3. `./twitter-engine engine-autopost --text "<draft>"`
 
 ### 4. Mentions reply loop (safe rollout)
 
 Draft-only:
 
-- `./run-twitter-helper reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1`
+- `./twitter-engine reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1`
 
 Post-enabled (capped):
 
-- `./run-twitter-helper reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1 --post --max-posts 1`
+- `./twitter-engine reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1 --post --max-posts 1`
 
 ## Output Locations
 

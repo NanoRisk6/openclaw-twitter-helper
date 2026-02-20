@@ -40,7 +40,7 @@ reply engine
 ## Tool Entry Points
 
 - Dedicated tool: `./reply-engine`
-- Helper wrapper: `./run-twitter-helper`
+- Helper wrapper: `./twitter-engine`
 
 ## High-Value Commands
 
@@ -102,17 +102,17 @@ Checks in one command:
 
 ## Dedupe + State Files
 
-- Replied log: `~/.config/openclaw-twitter-helper/replied_to_<account>.jsonl`
-- Queue files: `~/.config/openclaw-twitter-helper/approval_queue/q_<id>.json`
-- Mentions checkpoint: `~/.config/openclaw-twitter-helper/last_mention_id_<account>.txt`
-- Run audit log: `~/.config/openclaw-twitter-helper/reply_engine_runs.jsonl`
-- Watchlists: `~/.config/openclaw-twitter-helper/watchlists.json`
-- Persona: `~/.config/openclaw-twitter-helper/persona/openclaw.md`
+- Replied log: `~/.config/twitter-engine/replied_to_<account>.jsonl`
+- Queue files: `~/.config/twitter-engine/approval_queue/q_<id>.json`
+- Mentions checkpoint: `~/.config/twitter-engine/last_mention_id_<account>.txt`
+- Run audit log: `~/.config/twitter-engine/reply_engine_runs.jsonl`
+- Watchlists: `~/.config/twitter-engine/watchlists.json`
+- Persona: `~/.config/twitter-engine/persona/twitter-engine.md`
 
 ## Continuous Mode (Queue-First)
 
 ```bash
-*/20 * * * * cd /path/to/openclaw-twitter-helper && ./reply-engine twitter-discovery --query "openclaw OR local ai lang:en -is:retweet min_faves:5" --limit 10 --min-score 20 --min-confidence 78 --approval-queue >> logs/reply.log 2>&1
+*/20 * * * * cd /path/to/twitter-engine && ./reply-engine twitter-discovery --query "openclaw OR local ai lang:en -is:retweet min_faves:5" --limit 10 --min-score 20 --min-confidence 78 --approval-queue >> logs/reply.log 2>&1
 ```
 
 Then periodically:
@@ -124,7 +124,7 @@ Then periodically:
 
 ## Recommended Operational Sequence
 
-1. `./run-twitter-helper --account default diagnose`
+1. `./twitter-engine --account default diagnose`
 2. `./reply-engine twitter-discovery ... --approval-queue`
 3. `./reply-engine queue-list`
 4. `./reply-engine queue-approve --ids ...`

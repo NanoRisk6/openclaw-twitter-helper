@@ -2,4 +2,4 @@ Working on Open Claw updates tonight.
 ---
 Reply mode is now integrated into the helper.
 ---
-If you want to test, run: ./run-twitter-helper openclaw-autopost --text "Open Claw status update"
+If you want to test, run: ./twitter-engine engine-autopost --text "Open Claw status update"

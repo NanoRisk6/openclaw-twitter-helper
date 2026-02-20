@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TD
-  A["run-twitter-helper restart"] --> B["Load .env and validate credentials"]
+  A["twitter-engine restart"] --> B["Load .env and validate credentials"]
   B --> C{"doctor passes?"}
   C -- Yes --> D["Ready to post"]
   C -- No --> E["Launch auth-login browser flow"]
@@ -15,5 +15,5 @@ flowchart TD
 Use this command to start recovery after reboot:
 
 ```bash
-./run-twitter-helper restart
+./twitter-engine restart
 ```

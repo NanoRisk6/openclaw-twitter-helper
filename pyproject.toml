@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openclaw-twitter-helper"
+name = "twitter-engine"
 version = "0.1.0"
-description = "OAuth2 CLI for OpenClaw Twitter auto-posts/replies"
+description = "OAuth2 CLI for Twitter posting and reply workflows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -26,6 +26,7 @@ reply_engine = [
 ]
 
 [project.scripts]
+twitter-engine = "twitter_helper:main"
 twitter-helper = "twitter_helper:main"
 reply-engine = "reply_engine.cli:main"
 

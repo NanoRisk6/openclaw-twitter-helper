@@ -1,6 +1,6 @@
-# Open Claw Twitter Helper
+# Twitter Engine
 
-[![Tests](https://github.com/NanoRisk6/openclaw-twitter-helper/actions/workflows/test.yml/badge.svg)](https://github.com/NanoRisk6/openclaw-twitter-helper/actions/workflows/test.yml)
+[![Tests](https://github.com/NanoRisk6/twitter-engine/actions/workflows/test.yml/badge.svg)](https://github.com/NanoRisk6/twitter-engine/actions/workflows/test.yml)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -9,8 +9,8 @@ OAuth2 CLI for OpenClaw Twitter auto-posts/replies.
 ## Install
 
 ```bash
-git clone https://github.com/NanoRisk6/openclaw-twitter-helper.git
-cd openclaw-twitter-helper
+git clone https://github.com/NanoRisk6/twitter-engine.git
+cd twitter-engine
 python3 -m pip install --upgrade pip
 pip install -e .
 ```
@@ -36,11 +36,11 @@ export HELPER_DIR="$(pwd)"
 ## OpenClaw Native Skill Install
 
 ```bash
-git clone https://github.com/NanoRisk6/openclaw-twitter-helper.git ~/.openclaw/workspace/skills/x-twitter-helper
+git clone https://github.com/NanoRisk6/twitter-engine.git ~/.openclaw/workspace/skills/x-twitter-helper
 cd ~/.openclaw/workspace/skills/x-twitter-helper
 pip install -r requirements.txt
-./run-twitter-helper --account default auth-login
-./run-twitter-helper --account default diagnose
+./twitter-engine --account default auth-login
+./twitter-engine --account default diagnose
 ```
 
 Skill file:
@@ -50,9 +50,39 @@ Skill file:
 ## Fast Start
 
 ```bash
-$HELPER_DIR/run-twitter-helper restart
-$HELPER_DIR/run-twitter-helper diagnose
-$HELPER_DIR/run-twitter-helper openclaw-autopost --text "Open Claw is online"
+$HELPER_DIR/twitter-engine restart
+$HELPER_DIR/twitter-engine diagnose
+$HELPER_DIR/twitter-engine engine-autopost --text "Twitter Engine is online"
+```
+
+Even simpler day-to-day commands:
+
+```bash
+./twitter-engine kit
+./twitter-engine start
+./twitter-engine health
+./twitter-engine reply-now
+./twitter-engine inspire --topic "OpenClaw" --web-query "ai agents automation reliability"
+./twitter-engine reply-engine start --mode dry-run
+./twitter-engine memory --limit 20
+./twitter-engine post --text "hello from twitter-engine"
+```
+
+Reply engine loop examples:
+
+```bash
+./twitter-engine reply-engine start --mode dry-run
+./twitter-engine reply-engine start --mode queue --top-k 12
+./twitter-engine reply-engine start --mode post --max-posts 2 --min-quality 70 --min-confidence 72
+./reply-engine start --mode dry-run
+python src/reply_engine_loop.py memory --limit 30
+```
+
+If you regenerated your bearer token:
+
+```bash
+./twitter-engine set-bearer-token
+./twitter-engine health
 ```
 
 Dedicated reply engine tool:
@@ -64,7 +94,7 @@ Dedicated reply engine tool:
 ./reply-engine twitter-discovery --query "openclaw OR local ai" --web-enrich --web-context-items 3 --approval-queue
 ./reply-engine doctor --skip-network
 ./reply-engine doctor --json
-./run-twitter-helper reply-quick --handle OpenClawAI
+./twitter-engine reply-quick --handle OpenClawAI
 ```
 
 ## Open Claw Docs
@@ -79,12 +109,12 @@ Dedicated reply engine tool:
 ```bash
 python src/post_engine.py --help
 python src/reply_engine.py --help
-python src/supply_engine.py --help
+python src/reply_engine_loop.py --help
 ```
 
 - `src/post_engine.py`: setup/auth/doctor/posting workflows
 - `src/reply_engine.py`: reply discovery/queue/doctor workflows
-- `src/supply_engine.py`: alias of reply engine (same commands)
+- `src/reply_engine_loop.py`: alias of reply engine (same commands)
 - `src/twitter_helper.py`: unified full CLI (backward compatible)
 
 
@@ -112,7 +142,23 @@ This token is optional for basic posting, but recommended for reply scan/mention
 One-command mode (check/repair + post unique tweet):
 
 ```bash
-python src/twitter_helper.py run-twitter-helper --text "Open Claw status update"
+python src/twitter_helper.py twitter-engine --text "Status update"
+```
+
+Auto decision mode (default when no `--text`/`--file`):
+
+- Runs diagnose if posting health is not ready
+- Tries a safe reply draft if reply scanning is ready
+- Can gather data snapshot when no reply candidate is found
+- Falls back to posting with optional internet inspiration (Google News RSS + HN)
+
+```bash
+./twitter-engine
+./twitter-engine --mode diagnose
+./twitter-engine --mode reply
+./twitter-engine --mode post --text "status update"
+./twitter-engine --mode post --web-query "solana ai agents latency reliability"
+./twitter-engine --mode post --no-web-inspiration
 ```
 
 Restart recovery (no post):
@@ -120,9 +166,9 @@ Restart recovery (no post):
 ```bash
 python src/twitter_helper.py restart-setup
 # wrapper aliases:
-./run-twitter-helper restart
-./run-twitter-helper recover
-./run-twitter-helper fix
+./twitter-engine restart
+./twitter-engine recover
+./twitter-engine fix
 ```
 
 Post single tweet:
@@ -157,29 +203,29 @@ Post thread (`---` separators):
 python src/twitter_helper.py thread --file examples/thread.txt
 ```
 
-Open Claw integration post:
+Twitter Engine integration post:
 
 ```bash
-python src/twitter_helper.py openclaw-autopost --text "Open Claw status update"
+python src/twitter_helper.py engine-autopost --text "Status update"
 ```
 
 Dry-run:
 
 ```bash
-python src/twitter_helper.py openclaw-autopost --text "Open Claw status update" --dry-run
+python src/twitter_helper.py engine-autopost --text "Status update" --dry-run
 ```
 
 Readiness check:
 
 ```bash
-python src/twitter_helper.py openclaw
-python src/twitter_helper.py openclaw --json
+python src/twitter_helper.py engine-check
+python src/twitter_helper.py engine-check --json
 ```
 
 Claude/Open Claw auto-diagnose:
 
 ```bash
-./run-twitter-helper diagnose
+./twitter-engine diagnose
 python src/twitter_helper.py auto-diagnose --json
 ```
 
@@ -245,10 +291,10 @@ python src/twitter_helper.py reply-approve --approve q_ab12cd34 q_ef56gh78
 
 Unique applicable replies:
 - `reply-discover-run` now filters for specificity + 24h phrasing uniqueness before queue/post.
-- Recent reply prefixes are tracked in `~/.config/openclaw-twitter-helper/recent_replies.jsonl`.
-- Optional persona file: `~/.config/openclaw-twitter-helper/persona/openclaw.md`.
-- Double-reply protection: replied target IDs are tracked in `~/.config/openclaw-twitter-helper/replied_targets_<account>.json`.
-- Persistent dedupe log: `~/.config/openclaw-twitter-helper/replied_to_<account>.jsonl` (90-day check window).
+- Recent reply prefixes are tracked in `~/.config/twitter-engine/recent_replies.jsonl`.
+- Optional persona file: `~/.config/twitter-engine/persona/twitter-engine.md`.
+- Double-reply protection: replied target IDs are tracked in `~/.config/twitter-engine/replied_targets_<account>.json`.
+- Persistent dedupe log: `~/.config/twitter-engine/replied_to_<account>.jsonl` (90-day check window).
 - To intentionally override manual reply guard: `post --in-reply-to <ID> --force-reply-target`.
 
 ## Integrated Reply Engine
@@ -323,7 +369,7 @@ GitHub Actions workflow: `.github/workflows/test.yml`
 
 - OAuth1 keys/tokens are not used for primary posting flow.
 - OAuth2 callback URI must exactly match your app settings.
-- Public tweet text is sanitized to remove trailing `[openclaw-YYYYMMDD-HHMMSS-xxxx]` suffixes.
+- Public tweet text is sanitized to remove trailing `[twitter-engine-YYYYMMDD-HHMMSS-xxxx]` suffixes.
 - Anti-hallucination guard: after post/reply create, the helper re-fetches the tweet by ID and only reports success after verification.
 - OAuth2 access/refresh tokens are saved to OS keyring when available; `.env` is fallback-only.
 - API calls retry on HTTP 429 using `x-rate-limit-reset` before failing.

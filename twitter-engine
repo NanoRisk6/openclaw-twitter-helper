@@ -1,0 +1,156 @@
+#!/bin/zsh
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PY_BIN="python3"
+if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+  PY_BIN="$SCRIPT_DIR/.venv/bin/python"
+fi
+GLOBAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file|--account)
+      GLOBAL_ARGS+=("$1")
+      shift
+      if [[ $# -gt 0 ]]; then
+        GLOBAL_ARGS+=("$1")
+        shift
+      fi
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+FIRST_ARG="${1:-}"
+has_mode_flag() {
+  for a in "$@"; do
+    if [[ "$a" == "--mode" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+case "$FIRST_ARG" in
+  ""|start|run|go)
+    if [[ "$FIRST_ARG" != "" ]]; then
+      shift || true
+    fi
+    START_MODE="auto"
+    if [[ $# -gt 0 ]]; then
+      case "$1" in
+        auto|post|reply|diagnose)
+          START_MODE="$1"
+          shift || true
+          ;;
+      esac
+    fi
+    if [[ "$START_MODE" == "reply" ]]; then
+      REPLY_MODE_ARGS=()
+      if ! has_mode_flag "$@"; then
+        REPLY_MODE_ARGS=(--mode post --max-posts 1)
+      fi
+      exec "$PY_BIN" "$SCRIPT_DIR/src/reply_engine_loop.py" start \
+        --top-k 4 \
+        --mention-limit 6 \
+        --discovery-limit 10 \
+        --no-fetch-context \
+        --no-web-enrich \
+        "${REPLY_MODE_ARGS[@]}" \
+        "$@"
+    fi
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" kit --mode "$START_MODE" "$@"
+    ;;
+  health|check|diag)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" auto-diagnose "$@"
+    ;;
+  reply)
+    shift || true
+    REPLY_MODE_ARGS=()
+    if ! has_mode_flag "$@"; then
+      REPLY_MODE_ARGS=(--mode post --max-posts 1)
+    fi
+    exec "$PY_BIN" "$SCRIPT_DIR/src/reply_engine_loop.py" start \
+      --top-k 4 \
+      --mention-limit 6 \
+      --discovery-limit 10 \
+      --no-fetch-context \
+      --no-web-enrich \
+      "${REPLY_MODE_ARGS[@]}" \
+      "$@"
+    ;;
+  reply-now)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" twitter-engine --mode reply "$@"
+    ;;
+  gather|gather-data)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" gather-data "$@"
+    ;;
+  inspire|inspire-tweets)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" inspire-tweets "$@"
+    ;;
+  reply-engine|reply-loop)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/reply_engine_loop.py" "$@"
+    ;;
+  memory)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" memory "$@"
+    ;;
+  kit)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" kit "$@"
+    ;;
+  set-bearer|set-bearer-token|bearer)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" set-bearer-token "$@"
+    ;;
+  help)
+    cat <<'EOF'
+Twitter Engine Quick Start
+
+  ./twitter-engine start
+  ./twitter-engine start post
+  ./twitter-engine start reply
+  ./twitter-engine reply
+  ./twitter-engine kit
+  ./twitter-engine health
+  ./twitter-engine reply-now
+  ./twitter-engine gather
+  ./twitter-engine inspire --topic "OpenClaw"
+  ./twitter-engine reply-engine start --mode dry-run
+  ./twitter-engine memory --limit 20
+  ./twitter-engine set-bearer-token
+  ./twitter-engine post --text "hello from twitter-engine"
+
+Need full command list?
+  ./twitter-engine -h
+  ./twitter-engine twitter-engine --help
+EOF
+    exit 0
+    ;;
+esac
+
+case "$FIRST_ARG" in
+  restart|recover|fix|reboot)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" restart-setup "$@"
+    ;;
+  diagnose|auto-diagnose|claude-diagnose)
+    shift || true
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" auto-diagnose "$@"
+    ;;
+esac
+
+case "$FIRST_ARG" in
+  setup|auth-login|doctor|auto-diagnose|set-bearer-token|app-settings|walkthrough|engine-status|openclaw-status|check-auth|memory|post|engine-autopost|openclaw-autopost|engine-check|openclaw|thread|twitter-engine|run-twitter-helper|kit|seamless|restart-setup|gather-data|browse-twitter|mentions|search|inspire-tweets|reply-discover|reply-rank|reply-ideas|reply-run|reply-discover-run|reply-approve|reply-twitter-helper|reply-twitter-e2e|reply-quick)
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" "$@"
+    ;;
+  *)
+    exec "$PY_BIN" "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" twitter-engine "$@"
+    ;;
+esac

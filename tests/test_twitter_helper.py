@@ -18,6 +18,21 @@ spec.loader.exec_module(twitter_helper)
 
 
 class PostSanitizeTests(unittest.TestCase):
+    def test_sanitize_public_text_truncates_long_unbroken_segments(self) -> None:
+        raw = "alpha " + ("x" * 120) + " omega"
+        out = twitter_helper.sanitize_public_text(raw)
+        longest = max(len(seg) for seg in out.split())
+        self.assertLessEqual(longest, twitter_helper.MAX_UNBROKEN_SEGMENT_LEN)
+        self.assertIn("...", out)
+
+    def test_sanitize_public_text_shortens_long_urls(self) -> None:
+        raw = "see https://example.com/" + ("path/" * 30)
+        out = twitter_helper.sanitize_public_text(raw)
+        parts = out.split()
+        urlish = [p for p in parts if p.startswith("http")]
+        self.assertTrue(urlish)
+        self.assertLessEqual(len(urlish[0]), twitter_helper.MAX_UNBROKEN_SEGMENT_LEN)
+
     def test_post_tweet_strips_openclaw_suffix_before_payload(self) -> None:
         captured = {}
 
@@ -49,10 +64,9 @@ class PostSanitizeTests(unittest.TestCase):
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["payload"]["text"], "Hello world")
 
-    def test_make_unique_public_tweet_adds_visible_timestamp_suffix(self) -> None:
+    def test_make_unique_public_tweet_keeps_clean_text_without_timestamp_suffix(self) -> None:
         text = twitter_helper.make_unique_public_tweet("Open Claw status update")
-        self.assertTrue(text.startswith("Open Claw status update"))
-        self.assertRegex(text, r" • \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(text, "Open Claw status update")
         self.assertNotRegex(text, r"\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]$")
 
     def test_cmd_post_passes_reply_id(self) -> None:

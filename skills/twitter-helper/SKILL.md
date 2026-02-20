@@ -8,9 +8,9 @@ emoji: 🦞
 requires:
   binaries:
     - python3
-    - run-twitter-helper
+    - twitter-engine
   env: []
-homepage: https://github.com/NanoRisk6/openclaw-twitter-helper
+homepage: https://github.com/NanoRisk6/twitter-engine
 ---
 
 Use the root skill documentation for full usage:

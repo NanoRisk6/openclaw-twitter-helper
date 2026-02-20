@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 
 .DS_Store
+data/*.json
+data/*.jsonl
+data/*.md
+!data/sample_candidates.json

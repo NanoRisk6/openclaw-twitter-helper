@@ -33,7 +33,7 @@ class VerifyReplyVisibleTests(unittest.TestCase):
     def test_required_env_uses_keyring_access_token_fallback(self) -> None:
         class FakeKeyring:
             def get_password(self, service, username):
-                if service == "openclaw-twitter-helper:default" and username == "oauth_tokens":
+                if service == "twitter-engine:default" and username == "oauth_tokens":
                     return '{"access_token":"keyring_access"}'
                 return None
 
@@ -42,7 +42,7 @@ class VerifyReplyVisibleTests(unittest.TestCase):
         try:
             os.environ.pop("TWITTER_BEARER_TOKEN", None)
             os.environ.pop("TWITTER_OAUTH2_ACCESS_TOKEN", None)
-            os.environ["OPENCLAW_TWITTER_ACCOUNT"] = "default"
+            os.environ["TWITTER_ENGINE_ACCOUNT"] = "default"
             reply_helper.keyring = FakeKeyring()
             env = reply_helper._required_env()
         finally:

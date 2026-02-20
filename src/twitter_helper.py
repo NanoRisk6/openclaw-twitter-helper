@@ -10,16 +10,19 @@ import os
 import re
 import random
 import secrets
+import shutil
 import sys
 import tempfile
 import time
 import uuid
+import getpass
 from datetime import datetime, timedelta, timezone
 from email.message import Message
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -30,29 +33,39 @@ AUTH_URL = "https://twitter.com/i/oauth2/authorize"
 MEDIA_UPLOAD_URL = f"{API_BASE}/media/upload"
 MEDIA_METADATA_URL = f"{API_BASE}/media/metadata"
 MAX_TWEET_LEN = 280
+MAX_UNBROKEN_SEGMENT_LEN = 48
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access media.write"
-OPENCLAW_SUFFIX_RE = re.compile(
-    r"\s*\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]\s*$", re.IGNORECASE
+RUN_TAG_SUFFIX_RE = re.compile(
+    r"\s*\[(?:openclaw|twitter-engine)-\d{8}-\d{6}-[a-z0-9]{4}\]\s*$",
+    re.IGNORECASE,
 )
 WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_'-]{2,}")
 TOOL_ROOT = Path(__file__).resolve().parents[1]
-TOKEN_SERVICE_NAME = "openclaw-twitter-helper"
-TOKEN_CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
+TOKEN_SERVICE_NAME = "twitter-engine"
+LEGACY_TOKEN_SERVICE_NAME = "openclaw-twitter-helper"
+TOKEN_CONFIG_DIR = Path.home() / ".config" / "twitter-engine"
+LEGACY_TOKEN_CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
 TOKEN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 TOKENS_JSON_FALLBACK = TOKEN_CONFIG_DIR / "tokens.json"
+RATE_LIMIT_BARRIER_FILE = TOKEN_CONFIG_DIR / "rate_limit_barrier.json"
 ACTIVE_ACCOUNT = "default"
 USER_ID_CACHE_TTL_SECONDS = 86400
 APPROVAL_DIR = TOKEN_CONFIG_DIR / "approval_queue"
 APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
 RECENT_REPLIES_CACHE = TOKEN_CONFIG_DIR / "recent_replies.jsonl"
 RECENT_POSTS_CACHE = TOKEN_CONFIG_DIR / "recent_posts.jsonl"
-PERSONA_FILE = TOKEN_CONFIG_DIR / "persona" / "openclaw.md"
+TWEET_MEMORY_LOG = TOKEN_CONFIG_DIR / "tweet_memory.jsonl"
+PERSONA_FILE = TOKEN_CONFIG_DIR / "persona" / "twitter-engine.md"
 REPLIED_DEDUPE_DAYS = 90
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_SIZE_MB = 5
 MAX_IMAGES = 5
 MAX_REPLY_DRAFT_LEN = 240
+WEB_REQ_TIMEOUT_SECONDS = 8
+WEB_REQ_MAX_BYTES = 900_000
+WEB_REQ_MAX_RETRIES = 2
+WEB_INSPIRATION_CACHE_TTL_SECONDS = 120
 GENERIC_REPLY_OPENERS = (
     "great point",
     "totally agree",
@@ -81,6 +94,207 @@ CORPORATE_TONE_TERMS = (
     "synergy",
     "stakeholder",
 )
+FROG_PERSONA = {
+    "hooks": [
+        "hot take from frog mode:",
+        "real ones know:",
+        "counterintuitively,",
+        "the pattern under the pattern:",
+        "watch this:",
+        "this one's for the degens:",
+        "unpopular but correct:",
+        "scroll-stopping truth:",
+    ],
+    "closers": [
+        "what's your move?",
+        "prove me wrong.",
+        "thread if you're based.",
+        "frog or pass.",
+        "delta or cope.",
+        "gm if you felt this.",
+    ],
+    "slang_bank": [
+        "taxing",
+        "cooked",
+        "ngmi",
+        "wagmi but make it chaotic",
+        "send it",
+        "ratio incoming",
+        "frog army assemble",
+    ],
+    "emoji_density": 0.30,
+}
+VOICE_CONFIGS: Dict[str, Optional[Dict[str, object]]] = {
+    "chaotic": {
+        "slang_intensity": 0.75,
+        "emoji_density": 0.40,
+        "hooks": ["frog mode:", "watch this:", "frogs know:"],
+        "slang_terms": ["send it", "ratio incoming", "taxing"],
+        "extra_tail": "",
+    },
+    "degen": {
+        "slang_intensity": 0.95,
+        "emoji_density": 0.55,
+        "hooks": ["aped in:", "degen play:", "frogs only:"],
+        "slang_terms": ["heeming", "cooked", "wagmi", "perps", "ngmi"],
+        "extra_tail": "",
+    },
+    "based": {
+        "slang_intensity": 0.60,
+        "emoji_density": 0.25,
+        "hooks": ["real ones know:", "unpopular but correct:", "mid behavior detected:"],
+        "slang_terms": ["based", "prove me wrong", "taxing"],
+        "extra_tail": "",
+    },
+    "savage": {
+        "slang_intensity": 0.80,
+        "emoji_density": 0.35,
+        "hooks": ["ratio incoming:", "normies will seethe:", "cooked:"],
+        "slang_terms": ["ratio incoming", "cooked", "send it"],
+        "extra_tail": "normies seething in replies",
+    },
+    "operator": {
+        "slang_intensity": 0.45,
+        "emoji_density": 0.20,
+        "hooks": ["execution note:", "pipeline update:", "track this:"],
+        "slang_terms": ["delta", "pipeline", "constraints"],
+        "extra_tail": "",
+    },
+    "sage": {
+        "slang_intensity": 0.35,
+        "emoji_density": 0.15,
+        "hooks": ["the pattern under:", "counterintuitively,", "long-term frogs know:"],
+        "slang_terms": ["pattern", "compounding", "signal"],
+        "extra_tail": "",
+    },
+    "shitposter": {
+        "slang_intensity": 1.0,
+        "emoji_density": 0.70,
+        "hooks": ["lmao imagine:", "brainrot hours:", "chaos bulletin:"],
+        "slang_terms": ["cooked", "ngmi", "send it", "ratio incoming"],
+        "extra_tail": "",
+    },
+    "auto": None,
+}
+HIGH_SIGNAL_LEXICON = {
+    "service": "stack",
+    "workflow": "pipeline",
+    "process": "flow",
+    "feature": "weapon",
+    "solution": "move",
+    "integration": "hook",
+    "implementation": "send-it",
+    "optimization": "heeming",
+    "improvement": "delta",
+    "important": "taxing",
+    "valuable": "based",
+    "consider": "prove me wrong",
+    "note": "watch this",
+    "actually": "real ones know",
+    "essentially": "counterintuitively",
+    "basically": "straight up",
+}
+ANTI_BORING_BANNED = {
+    "you're not wrong",
+    "this hits",
+    "important to note",
+    "food for thought",
+    "worth considering",
+}
+FROG_JUDGE_WEIGHTS = {
+    "specificity": 0.30,
+    "frog_energy": 0.25,
+    "engagement": 0.20,
+    "anti_boring": 0.15,
+    "voice_authenticity": 0.10,
+}
+VIRAL_POTENTIAL_BONUS = {
+    "question_or_challenge": 12,
+    "number_or_metric": 8,
+    "frog_hook": 10,
+    "optimal_length": 6,
+    "emoji_fit": 5,
+    "contrarian_signal": 9,
+}
+VIRAL_PACKS: Dict[str, Optional[Dict[str, object]]] = {
+    "light": {
+        "voice": "chaotic",
+        "style": "auto",
+        "ensemble": 3,
+        "viral_boost": False,
+        "judge_threshold": 78.0,
+        "anti_boring": True,
+        "sharpen": True,
+    },
+    "medium": {
+        "voice": "auto",
+        "style": "auto",
+        "ensemble": 5,
+        "viral_boost": True,
+        "judge_threshold": 82.0,
+        "anti_boring": True,
+        "sharpen": True,
+    },
+    "nuclear": {
+        "voice": "degen",
+        "style": "contrarian",
+        "ensemble": 8,
+        "viral_boost": True,
+        "judge_threshold": 88.0,
+        "anti_boring": True,
+        "sharpen": True,
+    },
+    "alpha": {
+        "voice": "sage",
+        "style": "operator",
+        "ensemble": 6,
+        "viral_boost": True,
+        "judge_threshold": 85.0,
+        "anti_boring": True,
+        "sharpen": True,
+    },
+    "chaos": {
+        "voice": "shitposter",
+        "style": "auto",
+        "ensemble": 7,
+        "viral_boost": True,
+        "judge_threshold": 80.0,
+        "anti_boring": True,
+        "sharpen": True,
+    },
+    "infinite": {
+        "voice": "based",
+        "style": "contrarian",
+        "ensemble": 8,
+        "viral_boost": True,
+        "judge_threshold": 88.0,
+        "anti_boring": True,
+        "sharpen": True,
+    },
+    "auto": None,
+}
+WEB_INSPIRATION_CACHE: Dict[str, Dict[str, object]] = {}
+
+
+def _migrate_legacy_config_dir() -> None:
+    if not LEGACY_TOKEN_CONFIG_DIR.exists():
+        return
+    for legacy in LEGACY_TOKEN_CONFIG_DIR.rglob("*"):
+        rel = legacy.relative_to(LEGACY_TOKEN_CONFIG_DIR)
+        target = TOKEN_CONFIG_DIR / rel
+        if legacy.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(legacy, target)
+        except Exception:
+            continue
+
+
+_migrate_legacy_config_dir()
 
 
 def creative_mode_enabled() -> bool:
@@ -194,6 +408,7 @@ class TokenManager:
         self.env_path = env_path
         self.account = account
         self.key_prefix = f"{TOKEN_SERVICE_NAME}:{account}"
+        self.legacy_key_prefix = f"{LEGACY_TOKEN_SERVICE_NAME}:{account}"
 
     def _keyring_available(self) -> bool:
         return keyring is not None
@@ -210,16 +425,17 @@ class TokenManager:
     def _read_keyring_payload(self) -> Optional[Dict[str, str]]:
         if not self._keyring_available():
             return None
-        try:
-            raw = keyring.get_password(self.key_prefix, "oauth_tokens")
-            if not raw:
-                return None
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return {k: str(v) if v is not None else "" for k, v in parsed.items()}
-            return None
-        except Exception:
-            return None
+        for prefix in (self.key_prefix, self.legacy_key_prefix):
+            try:
+                raw = keyring.get_password(prefix, "oauth_tokens")
+                if not raw:
+                    continue
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return {k: str(v) if v is not None else "" for k, v in parsed.items()}
+            except Exception:
+                continue
+        return None
 
     def save_tokens(
         self,
@@ -330,6 +546,54 @@ def _headers_to_dict(headers: Optional[Message]) -> Dict[str, str]:
     return out
 
 
+def _load_rate_limit_barrier() -> Dict[str, object]:
+    if not RATE_LIMIT_BARRIER_FILE.exists():
+        return {}
+    try:
+        raw = RATE_LIMIT_BARRIER_FILE.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_rate_limit_barrier(until_ts: float, source: str, url: str) -> None:
+    RATE_LIMIT_BARRIER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "until_ts": float(until_ts),
+        "source": source,
+        "url": url,
+        "set_at": datetime.now(timezone.utc).isoformat(),
+    }
+    RATE_LIMIT_BARRIER_FILE.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _clear_rate_limit_barrier() -> None:
+    try:
+        if RATE_LIMIT_BARRIER_FILE.exists():
+            RATE_LIMIT_BARRIER_FILE.unlink()
+    except Exception:
+        pass
+
+
+def get_rate_limit_barrier_status() -> Dict[str, object]:
+    data = _load_rate_limit_barrier()
+    until_ts = float(data.get("until_ts", 0) or 0)
+    now = time.time()
+    active = until_ts > now
+    wait_seconds = int(max(0, until_ts - now))
+    return {
+        "active": active,
+        "wait_seconds": wait_seconds,
+        "until_ts": until_ts,
+        "source": str(data.get("source", "")),
+        "url": str(data.get("url", "")),
+    }
+
+
 def http_json_with_headers(
     method: str,
     url: str,
@@ -338,6 +602,17 @@ def http_json_with_headers(
     form_payload: Optional[Dict[str, str]] = None,
     max_retries: int = 5,
 ) -> Tuple[int, Dict[str, object], Dict[str, str]]:
+    barrier = get_rate_limit_barrier_status()
+    if barrier.get("active"):
+        wait_seconds = int(barrier.get("wait_seconds", 0))
+        source = str(barrier.get("source", ""))
+        return 429, {
+            "detail": (
+                f"Rate-limit barrier active for ~{wait_seconds}s "
+                f"(source={source or 'unknown'})."
+            )
+        }, {}
+
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -351,6 +626,8 @@ def http_json_with_headers(
         try:
             with urllib.request.urlopen(req, timeout=25) as resp:
                 raw = resp.read().decode("utf-8")
+                if get_rate_limit_barrier_status().get("active"):
+                    _clear_rate_limit_barrier()
                 return resp.status, json.loads(raw) if raw else {}, _headers_to_dict(resp.headers)
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8") if exc.fp else ""
@@ -372,12 +649,21 @@ def http_json_with_headers(
                 except Exception:
                     sleep_seconds = 10.0 * (attempt + 1)
                 sleep_seconds = min(sleep_seconds, 90.0)
-                print(
-                    f"Rate limit hit (429). Sleeping {int(sleep_seconds)}s before retry "
-                    f"({attempt + 1}/{max_retries - 1})..."
-                )
-                time.sleep(sleep_seconds)
-                continue
+                _save_rate_limit_barrier(time.time() + sleep_seconds, "http_429_retry", url)
+                return 429, {
+                    "detail": (
+                        f"Rate-limit barrier set for ~{int(sleep_seconds)}s "
+                        "after 429 (fast-fail)."
+                    )
+                }, hdrs
+            if exc.code == 429:
+                reset_raw = hdrs.get("x-rate-limit-reset", "")
+                until_ts = 0.0
+                try:
+                    until_ts = float(reset_raw)
+                except Exception:
+                    until_ts = time.time() + 60.0
+                _save_rate_limit_barrier(max(until_ts, time.time() + 30.0), "http_429_final", url)
             return exc.code, body, hdrs
     return 429, {"detail": "max retries exceeded"}, {}
 
@@ -413,16 +699,62 @@ def get_env_value(env: Dict[str, str], key: str, default: str = "") -> str:
 
 
 def get_read_bearer_token(env: Dict[str, str], env_path: Optional[Path] = None) -> str:
-    token = get_env_value(env, "TWITTER_BEARER_TOKEN")
-    if not token and env_path is not None:
-        token = token_manager(env_path).get_access_token(env)
-    if not token:
-        token = get_env_value(env, "TWITTER_OAUTH2_ACCESS_TOKEN")
-    if not token:
-        raise TwitterHelperError(
-            "Missing TWITTER_BEARER_TOKEN (or TWITTER_OAUTH2_ACCESS_TOKEN) for browse-twitter."
+    def verify_token(candidate: str) -> bool:
+        status, _ = api_get_with_token(
+            f"{API_BASE}/tweets/search/recent?query=openclaw%20lang%3Aen%20-is%3Aretweet&max_results=10",
+            candidate,
         )
-    return token
+        if status == 429:
+            return True
+        return 200 <= status < 300
+
+    def prompt_and_save() -> str:
+        if env_path is None or not sys.stdin.isatty():
+            raise TwitterHelperError(
+                "Missing TWITTER_BEARER_TOKEN (or TWITTER_OAUTH2_ACCESS_TOKEN) for read/scan commands."
+            )
+        entered = getpass.getpass("TWITTER_BEARER_TOKEN required. Paste new token: ").strip()
+        if not entered:
+            raise TwitterHelperError("No bearer token provided.")
+        env_local = load_env_file(env_path)
+        env_local["TWITTER_BEARER_TOKEN"] = entered
+        write_env_file(env_path, env_local)
+        env["TWITTER_BEARER_TOKEN"] = entered
+        os.environ["TWITTER_BEARER_TOKEN"] = entered
+        print(f"Saved TWITTER_BEARER_TOKEN to {env_path}")
+        if not verify_token(entered):
+            raise TwitterHelperError("Provided TWITTER_BEARER_TOKEN is invalid (verification failed).")
+        print("Bearer token verification passed.")
+        return entered
+
+    # Prefer .env value over exported shell env var to avoid stale env overrides.
+    env_file_token = str(env.get("TWITTER_BEARER_TOKEN", "")).strip()
+    shell_token = str(os.getenv("TWITTER_BEARER_TOKEN", "")).strip()
+    token = env_file_token or shell_token
+    if token:
+        if verify_token(token):
+            return token
+        if env_path is not None and sys.stdin.isatty():
+            if env_file_token and shell_token and env_file_token != shell_token:
+                print(
+                    "Detected conflicting TWITTER_BEARER_TOKEN values (.env vs shell env). "
+                    "Using .env; please remove stale shell export."
+                )
+            print("Existing TWITTER_BEARER_TOKEN appears invalid. Please provide a regenerated token.")
+            return prompt_and_save()
+        raise TwitterHelperError(
+            "TWITTER_BEARER_TOKEN is invalid for read/scan commands. Regenerate it and set it with `set-bearer-token`."
+        )
+
+    oauth_token = ""
+    if env_path is not None:
+        oauth_token = token_manager(env_path).get_access_token(env)
+    if not oauth_token:
+        oauth_token = get_env_value(env, "TWITTER_OAUTH2_ACCESS_TOKEN")
+    if oauth_token and verify_token(oauth_token):
+        return oauth_token
+
+    return prompt_and_save()
 
 
 def refresh_tokens(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> Config:
@@ -704,7 +1036,7 @@ def post_tweet(
     if not sanitized_text:
         raise TwitterHelperError("Tweet text is empty after sanitization.")
 
-    active_run_tag = run_tag or unique_marker("openclaw")
+    active_run_tag = run_tag or unique_marker("twitter-engine")
     print(f'[{active_run_tag}] posting: "{sanitized_text}"')
 
     payload: Dict[str, object] = {"text": sanitized_text}
@@ -736,10 +1068,30 @@ def validate_tweet_len(text: str) -> None:
 
 
 def sanitize_public_text(text: str) -> str:
-    return OPENCLAW_SUFFIX_RE.sub("", text).strip()
+    def shorten_run(run: str) -> str:
+        if len(run) <= MAX_UNBROKEN_SEGMENT_LEN:
+            return run
+        if run.startswith(("http://", "https://")):
+            try:
+                parsed = urllib.parse.urlparse(run)
+                host = parsed.netloc or "link"
+                candidate = f"{parsed.scheme}://{host}"
+                if len(candidate) > MAX_UNBROKEN_SEGMENT_LEN:
+                    candidate = candidate[: MAX_UNBROKEN_SEGMENT_LEN - 3] + "..."
+                return candidate
+            except Exception:
+                pass
+        head = max(8, (MAX_UNBROKEN_SEGMENT_LEN - 3) // 2)
+        tail = MAX_UNBROKEN_SEGMENT_LEN - 3 - head
+        return run[:head] + "..." + run[-tail:]
+
+    cleaned = RUN_TAG_SUFFIX_RE.sub("", text).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\S{" + str(MAX_UNBROKEN_SEGMENT_LEN + 1) + r",}", lambda m: shorten_run(m.group(0)), cleaned)
+    return cleaned.strip()
 
 
-def unique_marker(prefix: str = "openclaw") -> str:
+def unique_marker(prefix: str = "twitter-engine") -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     token = secrets.token_hex(2)
     return f"{prefix}-{stamp}-{token}"
@@ -750,16 +1102,11 @@ def make_unique_public_tweet(base_text: str) -> str:
     if not base:
         raise TwitterHelperError("No tweet text provided.")
 
-    suffix = datetime.now(timezone.utc).strftime(" • %Y-%m-%d %H:%M:%SZ")
-    allowed = MAX_TWEET_LEN - len(suffix)
-    if allowed < 1:
-        raise TwitterHelperError("Tweet too long to append uniqueness suffix.")
-    if len(base) > allowed:
-        if allowed <= 3:
-            base = base[:allowed]
-        else:
-            base = base[: allowed - 3].rstrip() + "..."
-    return base + suffix
+    if len(base) <= MAX_TWEET_LEN:
+        return base
+    if MAX_TWEET_LEN <= 3:
+        return base[:MAX_TWEET_LEN]
+    return base[: MAX_TWEET_LEN - 3].rstrip() + "..."
 
 
 def _post_prefix_key(text: str) -> str:
@@ -805,51 +1152,294 @@ def record_recent_post(text: str) -> None:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def generate_reflective_post_text() -> str:
-    reflections = [
-        "Hot take: most autonomous workflows fail from noisy decision boundaries, not model quality.",
-        "Counterintuitive lesson: shipping less often but with tighter feedback loops outperforms nonstop posting.",
-        "I keep seeing this pattern: the best local-agent stacks are boring, observable, and brutally simple.",
-        "Today’s reflection: autonomy starts compounding only after you remove the fragile branch everyone ignores.",
-    ]
-    build_logs = [
-        "Just removed one brittle step from the loop and latency dropped. Tiny fix, outsized effect.",
-        "Build note: one guardrail + one metric beats five clever prompts every time.",
-        "Cut one noisy branch in the pipeline and reply quality jumped immediately.",
-        "Shipped a reliability patch today: fewer moving parts, fewer hallucinated outcomes.",
-    ]
-    questions = [
-        "What’s your highest-leverage automation fix this week: latency, quality, or reliability?",
-        "Where does your agent loop still break in production: auth, context, or dedupe?",
-        "If you could harden one part of your stack tonight, what would you pick first?",
-        "What’s one rule that made your autonomous workflow actually trustworthy?",
-    ]
-    takeaways = [
-        "Takeaway: if your loop isn’t observable, it isn’t autonomous yet.",
-        "Takeaway: quality improves fastest when you optimize prompts and process together.",
-        "Takeaway: consistency without relevance is noise; relevance without consistency is luck.",
-        "Takeaway: the fastest path to better outputs is fewer assumptions, more checkpoints.",
-    ]
+def _tweet_memory_file(account: Optional[str] = None) -> Path:
+    acct = (account or ACTIVE_ACCOUNT or "default").strip() or "default"
+    return TOKEN_CONFIG_DIR / f"tweet_memory_{acct}.jsonl"
 
-    candidates = reflections + build_logs + questions + takeaways
 
-    def viral_score(text: str) -> int:
-        score = 0
+def record_tweet_memory(
+    kind: str,
+    text: str,
+    tweet_id: str = "",
+    url: str = "",
+    meta: Optional[Dict[str, object]] = None,
+) -> None:
+    path = _tweet_memory_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row: Dict[str, object] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "account": ACTIVE_ACCOUNT,
+        "kind": kind,
+        "text": sanitize_public_text(text),
+    }
+    if tweet_id:
+        row["tweet_id"] = str(tweet_id)
+    if url:
+        row["url"] = str(url)
+    if meta:
+        row["meta"] = meta
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def load_tweet_memory(limit: int = 20, account: Optional[str] = None) -> List[Dict[str, object]]:
+    path = _tweet_memory_file(account)
+    if not path.exists():
+        return []
+    out: List[Dict[str, object]] = []
+    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
+def apply_viral_pack(settings: Dict[str, object], viral_pack: Optional[str]) -> Dict[str, object]:
+    pack_name = str(viral_pack or "").strip().lower()
+    if not pack_name:
+        return dict(settings)
+    if pack_name == "auto":
+        rng = random.SystemRandom()
+        choices = ["light", "medium", "nuclear", "alpha", "chaos"]
+        weights = [15, 35, 15, 20, 15]
+        pack_name = rng.choices(choices, weights=weights, k=1)[0]
+    pack = VIRAL_PACKS.get(pack_name)
+    if not isinstance(pack, dict):
+        return dict(settings)
+    merged = dict(settings)
+    merged.update(pack)
+    return merged
+
+
+def generate_reflective_post_text(
+    topic: str = "autonomous systems",
+    inspiration_texts: Optional[List[str]] = None,
+    style: str = "auto",
+    voice: str = "auto",
+    viral_pack: Optional[str] = None,
+    anti_boring: bool = False,
+    sharpen: bool = False,
+    judge_threshold: float = 82.0,
+    max_attempts: int = 7,
+    ensemble_size: int = 1,
+    viral_boost: bool = False,
+) -> str:
+    resolved = apply_viral_pack(
+        {
+            "style": style,
+            "voice": voice,
+            "ensemble": ensemble_size,
+            "viral_boost": viral_boost,
+            "judge_threshold": judge_threshold,
+            "anti_boring": anti_boring,
+            "sharpen": sharpen,
+        },
+        viral_pack=viral_pack,
+    )
+    style = str(resolved.get("style", style) or style)
+    voice = str(resolved.get("voice", voice) or voice)
+    ensemble_size = int(resolved.get("ensemble", ensemble_size) or ensemble_size)
+    viral_boost = bool(resolved.get("viral_boost", viral_boost))
+    judge_threshold = float(resolved.get("judge_threshold", judge_threshold) or judge_threshold)
+    anti_boring = bool(resolved.get("anti_boring", anti_boring))
+    sharpen = bool(resolved.get("sharpen", sharpen))
+
+    thesis_lines = [
+        "Most agent failures are orchestration failures disguised as model failures.",
+        "Teams lose more throughput to ambiguity than to latency.",
+        "If a loop cannot explain itself, it cannot scale safely.",
+        "Reliability is the growth channel nobody wants to market.",
+        "The compounding edge is tighter decisions, not more generation.",
+    ]
+    tactical_lines = [
+        "Ship fewer branches and instrument every decision boundary.",
+        "Pick one leading metric and kill everything that does not move it.",
+        "Force hard handoffs: gather -> decide -> act -> verify.",
+        "Treat dedupe as distribution quality, not anti-spam housekeeping.",
+        "Use short feedback windows; long loops hide expensive mistakes.",
+    ]
+    viral_closers = [
+        "If you had 1 hour, what would you remove first?",
+        "What breaks first in your loop: auth, context, or operator discipline?",
+        "Would you trade post volume for 2x trust?",
+        "What metric proves your loop is improving, not just running?",
+        "What is your hard no-go rule before publishing?",
+    ]
+    pattern_lines = [
+        "Fast attracts attention. Stable compounds outcomes.",
+        "New model is optional. Clear architecture is not.",
+        "Noise scales quickly. Signal scales profitably.",
+        "Cute demo, brittle loop. Boring loop, durable edge.",
+    ]
+    anti_repeat_phrases = {
+        "hot take:",
+        "counterintuitive lesson:",
+        "what is your highest-leverage fix",
+        "what would you harden first",
+        "best move is one clear action",
+    }
+
+    def novelty_penalty(text: str, memory_texts: List[str]) -> int:
+        toks = {w.lower() for w in WORD_RE.findall(text)}
+        if not toks:
+            return 10
+        penalty = 0
+        for old in memory_texts[:80]:
+            otoks = {w.lower() for w in WORD_RE.findall(old)}
+            if not otoks:
+                continue
+            inter = len(toks.intersection(otoks))
+            union = len(toks.union(otoks))
+            sim = inter / union if union else 0.0
+            if sim >= 0.75:
+                penalty += 20
+            elif sim >= 0.60:
+                penalty += 8
+        return penalty
+
+    def viral_score(text: str, memory_texts: List[str]) -> int:
+        lowered = text.lower()
+        score = 40
+        if 110 <= len(text) <= 235:
+            score += 16
         if text.endswith("?"):
-            score += 3
+            score += 8
         if ":" in text:
-            score += 2
-        if any(k in text.lower() for k in ("hot take", "counterintuitive", "takeaway")):
-            score += 2
-        if 110 <= len(text) <= 220:
-            score += 2
+            score += 5
+        if any(x in lowered for x in ("metric", "loop", "decision", "reliability", "context", "auth", "dedupe")):
+            score += 12
+        if any(x in lowered for x in anti_repeat_phrases):
+            score -= 24
+        score -= novelty_penalty(text, memory_texts)
         return score
 
-    recent = load_recent_post_prefixes(hours=24)
-    fresh = [t for t in candidates if _post_prefix_key(t) not in recent]
-    pool = fresh or candidates
-    random.shuffle(pool)
-    return sorted(pool, key=viral_score, reverse=True)[0]
+    recent = load_recent_post_prefixes(hours=72)
+    memory_rows = load_tweet_memory(limit=180)
+    memory_texts = [str(row.get("text", "")) for row in memory_rows if isinstance(row, dict)]
+    memory_keys = {_post_prefix_key(t) for t in memory_texts if t}
+    rng = random.SystemRandom()
+    weak_inspiration_terms = {
+        "customer",
+        "customers",
+        "people",
+        "today",
+        "world",
+        "users",
+        "teams",
+        "thing",
+        "things",
+    }
+    inspiration_terms = [
+        term
+        for term, _ in top_terms(inspiration_texts or [], top_n=18)
+        if len(term) >= 4 and term not in weak_inspiration_terms and term not in STOPWORDS
+    ]
+    candidates: List[Tuple[str, float, str, str]] = []
+    best_attempt: Optional[Tuple[str, float, str, str]] = None
+
+    style_pool = ["thesis_tactic_question", "contrast", "prediction", "challenge", "signal"]
+    if style == "contrarian":
+        style_pool = ["contrast", "prediction", "challenge"]
+    elif style == "operator":
+        style_pool = ["thesis_tactic_question", "signal", "challenge"]
+    elif style == "story":
+        style_pool = ["prediction", "challenge", "thesis_tactic_question"]
+
+    total_attempts = max(1, int(max_attempts))
+    ensemble_n = max(1, min(8, int(ensemble_size)))
+    style_label_map = {
+        "thesis_tactic_question": "operator",
+        "contrast": "contrarian",
+        "prediction": "story",
+        "challenge": "contrarian",
+        "signal": "operator",
+    }
+
+    for _ in range(total_attempts):
+        round_candidates: List[Tuple[str, float, str, str]] = []
+        for idx in range(ensemble_n):
+            chosen_style = rng.choice(style_pool) if style == "auto" else rng.choice(style_pool)
+            trial_style = style_label_map.get(chosen_style, str(style or "auto"))
+            if chosen_style == "thesis_tactic_question":
+                text = f"{rng.choice(thesis_lines)} {rng.choice(tactical_lines)} {rng.choice(viral_closers)}"
+            elif chosen_style == "contrast":
+                text = f"{rng.choice(pattern_lines)} {rng.choice(tactical_lines)} {rng.choice(viral_closers)}"
+            elif chosen_style == "prediction":
+                term = rng.choice(inspiration_terms) if inspiration_terms else "agent operations"
+                text = (
+                    f"Prediction for {topic}: teams that operationalize {term} with verifiable checkpoints will "
+                    f"outship teams chasing raw output volume. {rng.choice(viral_closers)}"
+                )
+            elif chosen_style == "challenge":
+                term = rng.choice(inspiration_terms) if inspiration_terms else "reliability"
+                text = (
+                    f"Builder challenge: ship one measurable improvement around {term} in 24 hours. "
+                    f"Post the before/after metric, not motivation."
+                )
+            else:
+                if len(inspiration_terms) >= 2:
+                    a, b = rng.sample(inspiration_terms[:10], 2)
+                else:
+                    a, b = ("signal", "execution")
+                text = f"Signal this week: {a}. Constraint that matters: {b}. {rng.choice(viral_closers)}"
+
+            text = sanitize_public_text(text)
+            if voice == "auto":
+                trial_voice = _resolve_voice_name("auto")
+            elif ensemble_n > 1 and idx % 2 == 1:
+                trial_voice = _resolve_voice_name("auto")
+            else:
+                trial_voice = _resolve_voice_name(voice)
+            text = apply_voice(
+                text,
+                voice=trial_voice,
+                topic_entropy=calculate_entropy(" ".join(inspiration_terms)),
+                sharpen=sharpen,
+            )
+            if len(text) > MAX_TWEET_LEN:
+                text = text[: MAX_TWEET_LEN - 3].rstrip() + "..."
+            if anti_boring:
+                lowered = text.lower()
+                if any(p in lowered for p in ANTI_BORING_BANNED):
+                    continue
+                if not text.endswith("?") and "prediction for" not in lowered:
+                    continue
+            if any(p in text.lower() for p in anti_repeat_phrases):
+                continue
+            pkey = _post_prefix_key(text)
+            if pkey in recent or pkey in memory_keys:
+                continue
+            if text.count(":") > 2:
+                continue
+            judge = frog_judge_score(text, trial_voice, style=trial_style, viral_boost=viral_boost)
+            candidate = (text, judge, trial_voice, trial_style)
+            round_candidates.append(candidate)
+            if best_attempt is None or judge > best_attempt[1]:
+                best_attempt = candidate
+
+        for candidate in round_candidates:
+            if candidate[1] >= float(judge_threshold):
+                candidates.append(candidate)
+        if candidates:
+            break
+
+    if not candidates:
+        if best_attempt is not None:
+            return best_attempt[0]
+        fallback = "Build less fluff. Ship one measurable improvement. What metric proves progress this week?"
+        if sharpen:
+            fallback = sharpen_with_lexicon(fallback)
+        return sanitize_public_text(fallback)
+    ranked = sorted(candidates, key=lambda t: (t[1], viral_score(t[0], memory_texts)), reverse=True)
+    return ranked[0][0]
 
 
 def make_unique_reply_tweet(base_text: str) -> str:
@@ -1003,6 +1593,16 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
         else:
             print(f"posted: {result['reply_url']}")
             print(f"log: {result['log_path']}")
+            picked_idx = max(1, int(result.get("picked_index", 1))) - 1
+            drafts = result.get("drafts", []) if isinstance(result.get("drafts"), list) else []
+            picked_text = str(drafts[picked_idx]).strip() if drafts and picked_idx < len(drafts) else ""
+            record_tweet_memory(
+                kind="reply",
+                text=picked_text,
+                tweet_id=str(result.get("reply_id", "")),
+                url=str(result.get("reply_url", "")),
+                meta={"source": "reply-twitter-helper", "target": str(result.get("tweet_id", ""))},
+            )
         return 0
 
     if args.command == "reply-twitter-e2e":
@@ -1037,6 +1637,14 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
             print(f"log: {result['log_path']}")
         for item in result["results"]:
             print(f"- {item['status']} | {item['tweet_id']} | @{item['author']}")
+            if item.get("status") == "posted":
+                record_tweet_memory(
+                    kind="reply",
+                    text=str(item.get("picked_text", "")),
+                    tweet_id=str(item.get("reply_id", "")),
+                    url=str(item.get("reply_url", "")),
+                    meta={"source": "reply-twitter-e2e", "target": str(item.get("tweet_id", ""))},
+                )
         return 0
 
     if args.command == "reply-quick":
@@ -2025,6 +2633,302 @@ def cmd_search(env_path: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def gather_data_snapshot(
+    env_path: Path,
+    handle: str = "OpenClawAI",
+    query: str = 'openclaw OR "local ai agent" lang:en -is:retweet',
+    limit: int = 20,
+    max_pages: int = 1,
+) -> Dict[str, object]:
+    env = load_env_file(env_path)
+    bearer = get_read_bearer_token(env, env_path)
+    per_page = max(10, min(int(limit), 100))
+    pages = max(1, min(int(max_pages), 10))
+
+    mentions_rows: List[Dict[str, object]] = []
+    mentions_error = ""
+    try:
+        uid = resolve_current_user_id(env_path, env)
+        mention_params = [
+            f"max_results={per_page}",
+            "expansions=author_id",
+            "tweet.fields=created_at,public_metrics,conversation_id,text",
+            "user.fields=username,name",
+        ]
+        status, body = api_get_with_token(
+            f"{API_BASE}/users/{uid}/mentions?" + "&".join(mention_params),
+            bearer,
+        )
+        if status < 400 and isinstance(body, dict) and isinstance(body.get("data"), list):
+            mentions_rows = [r for r in body.get("data", []) if isinstance(r, dict)]
+        elif status >= 400:
+            mentions_error = f"mentions_failed_{status}"
+    except Exception as exc:
+        mentions_error = str(exc)
+
+    search_rows, users, meta = fetch_search_rows(
+        bearer=bearer,
+        query=query,
+        limit=per_page,
+        max_pages=pages,
+        since_id=None,
+        until_id=None,
+    )
+
+    report = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "account": ACTIVE_ACCOUNT,
+        "handle": handle,
+        "query": query,
+        "mentions_count": len(mentions_rows),
+        "search_count": len(search_rows),
+        "mentions_error": mentions_error,
+        "search_meta": meta,
+        "search_users": users,
+        "mentions_sample": mentions_rows[: min(10, len(mentions_rows))],
+        "search_sample": search_rows[: min(20, len(search_rows))],
+    }
+    return report
+
+
+def cmd_gather_data(env_path: Path, args: argparse.Namespace) -> int:
+    report = gather_data_snapshot(
+        env_path=env_path,
+        handle=args.handle,
+        query=args.query,
+        limit=args.limit,
+        max_pages=args.max_pages,
+    )
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Decision: gather-data")
+    print(f"Saved data snapshot -> {out}")
+    print(f"Mentions: {report.get('mentions_count', 0)} | Search: {report.get('search_count', 0)}")
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    rows = load_tweet_memory(limit=args.limit, account=getattr(args, "account_name", None))
+    if args.json:
+        print(json.dumps({"count": len(rows), "items": rows}, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("No tweet memory yet.")
+        return 0
+    print(f"Tweet memory ({len(rows)}):")
+    for i, row in enumerate(rows, start=1):
+        kind = str(row.get("kind", "post"))
+        ts = str(row.get("ts", ""))
+        text = str(row.get("text", ""))
+        tid = str(row.get("tweet_id", ""))
+        url = str(row.get("url", ""))
+        print(f"{i}. [{kind}] {ts}")
+        if tid:
+            print(f"   id={tid}")
+        if url:
+            print(f"   {url}")
+        print(f"   {text}")
+    return 0
+
+
+def cmd_kit(env_path: Path, args: argparse.Namespace) -> int:
+    summary: Dict[str, object] = {
+        "mode": args.mode,
+        "decision": "",
+        "status": "",
+        "action_taken": "",
+        "artifact_paths": [],
+        "errors": [],
+    }
+    barrier = get_rate_limit_barrier_status()
+    if barrier.get("active"):
+        summary["decision"] = "diagnose"
+        summary["status"] = "blocked"
+        summary["action_taken"] = "auto-diagnose"
+        summary["errors"] = [f"rate_limit_barrier:{int(barrier.get('wait_seconds', 0))}s"]
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print("Kit decision: diagnose")
+            print(f"Rate-limit barrier active (~{int(barrier.get('wait_seconds', 0))}s).")
+        return 1
+
+    report = diagnose_engine(env_path=env_path, skip_network=False, reply_target_id=None)
+    posting_ready = bool((report.get("posting") or {}).get("ready"))
+    if args.mode == "diagnose" or not posting_ready:
+        summary["decision"] = "diagnose"
+        summary["status"] = "blocked" if not posting_ready else "ok"
+        summary["action_taken"] = "auto-diagnose"
+        summary["errors"] = list((report.get("posting") or {}).get("issues", []))
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print("Kit decision: diagnose")
+            for issue in summary["errors"]:
+                print(f"- {issue}")
+        return 1 if not posting_ready else 0
+
+    if args.mode in {"auto", "reply"} and bool((report.get("reply_scan") or {}).get("ready")):
+        try:
+            ensure_reply_scan_token(env_path)
+        except Exception as exc:
+            summary["decision"] = "reply"
+            summary["status"] = "blocked"
+            summary["action_taken"] = "auth-fix-required"
+            summary["errors"] = [f"reply_token_error:{exc}"]
+            if args.json:
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+            else:
+                print("Kit decision: reply")
+                print(f"Reply token issue: {exc}")
+            return 1
+        try:
+            has_candidate, item = _run_reply_preview(
+                handle=args.reply_handle,
+                since_id=args.reply_since_id,
+                report_path=args.report_path,
+                log_path=args.log_path,
+                post=bool(args.mode == "reply" and not args.dry_run),
+                verify_post=True,
+            )
+        except Exception as exc:
+            has_candidate, item = (False, None)
+            summary["errors"] = [str(exc)]
+            if args.mode == "reply":
+                summary["decision"] = "reply"
+                summary["status"] = "blocked"
+                summary["action_taken"] = "diagnose"
+                if args.json:
+                    print(json.dumps(summary, ensure_ascii=False, indent=2))
+                else:
+                    print("Kit decision: reply")
+                    print(f"Reply engine error: {exc}")
+                return 1
+        if has_candidate and isinstance(item, dict):
+            summary["decision"] = "reply"
+            summary["status"] = "ok"
+            item_status = str(item.get("status", "drafted"))
+            summary["action_taken"] = "post-reply" if item_status == "posted" else "draft-reply"
+            summary["artifact_paths"] = [args.report_path]
+            summary["reply_preview"] = {
+                "tweet_id": item.get("tweet_id", ""),
+                "author": item.get("author", ""),
+                "text": item.get("picked_text", ""),
+            }
+            if item_status == "posted":
+                summary["reply_url"] = item.get("reply_url", "")
+                summary["reply_id"] = item.get("reply_id", "")
+            if args.json:
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+            else:
+                print("Kit decision: reply")
+                print(f"{item.get('tweet_id')} | @{item.get('author')}")
+                print(str(item.get("picked_text", "")).strip())
+                if item_status == "posted" and item.get("reply_url"):
+                    print(f"Posted: {item.get('reply_url')}")
+            return 0
+        if args.mode == "reply":
+            summary["decision"] = "reply"
+            summary["status"] = "no_candidate"
+            summary["action_taken"] = "none"
+            if args.json:
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+            else:
+                print("Kit decision: reply")
+                print("No suitable reply candidate found.")
+            return 0
+
+    if args.mode == "auto" and args.gather_when_no_reply:
+        snapshot = gather_data_snapshot(
+            env_path=env_path,
+            handle=args.reply_handle,
+            query=args.gather_query,
+            limit=args.gather_limit,
+            max_pages=args.gather_max_pages,
+        )
+        out = Path(args.gather_output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary["decision"] = "gather-data"
+        summary["status"] = "ok"
+        summary["action_taken"] = "saved-snapshot"
+        summary["artifact_paths"] = [str(out)]
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print("Kit decision: gather-data")
+            print(f"Saved data snapshot -> {out}")
+        return 0
+
+    cfg, env_values = resolve_config(env_path)
+    base_text = args.text
+    if args.file:
+        base_text = Path(args.file).read_text(encoding="utf-8").strip()
+    if not base_text:
+        web_items, web_err = maybe_collect_web_inspiration(
+            enabled=bool(getattr(args, "web_inspiration", True)),
+            query=str(getattr(args, "web_query", "ai agents automation reliability")),
+            item_limit=int(getattr(args, "web_items", 8)),
+        )
+        if web_items:
+            summary["web_inspiration_count"] = len(web_items)
+        if web_err:
+            errs = summary.get("errors", [])
+            if isinstance(errs, list):
+                errs.append(f"web_inspiration_error:{web_err}")
+                summary["errors"] = errs
+        base_text = generate_reflective_post_text(
+            topic=str(getattr(args, "web_query", "ai agents")),
+            inspiration_texts=web_items,
+            style=str(getattr(args, "style", "auto") or "auto"),
+            voice=str(getattr(args, "voice", "auto") or "auto"),
+            viral_pack=str(getattr(args, "viral_pack", "") or ""),
+            anti_boring=bool(getattr(args, "anti_boring", False)),
+            sharpen=bool(getattr(args, "sharpen", False)),
+            judge_threshold=float(getattr(args, "judge_threshold", 82.0)),
+            max_attempts=int(getattr(args, "max_attempts", 7)),
+            ensemble_size=int(getattr(args, "ensemble", 1)),
+            viral_boost=bool(getattr(args, "viral_boost", False)),
+        )
+    text = make_unique_public_tweet(base_text)
+    if args.dry_run:
+        summary["decision"] = "post"
+        summary["status"] = "dry_run"
+        summary["action_taken"] = "render-text"
+        summary["post_text"] = text
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print("Kit decision: post")
+            print(text)
+        return 0
+
+    fresh, (status, body) = post_with_retry(cfg, env_path, env_values, text)
+    if status < 200 or status >= 300:
+        raise TwitterHelperError(f"Kit post failed ({status}): {json.dumps(body, ensure_ascii=False)}")
+    data = body.get("data") if isinstance(body, dict) else None
+    tweet_id = str(data.get("id", "")) if isinstance(data, dict) else ""
+    if not tweet_id:
+        raise TwitterHelperError("Kit post returned no tweet id.")
+    _, tweet_url = verify_post_visible(fresh, tweet_id)
+    record_recent_post(text)
+    record_tweet_memory(kind="post", text=text, tweet_id=tweet_id, url=tweet_url, meta={"source": "kit"})
+    summary["decision"] = "post"
+    summary["status"] = "ok"
+    summary["action_taken"] = "posted"
+    summary["tweet_id"] = tweet_id
+    summary["url"] = tweet_url
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print("Kit decision: post")
+        print(f"Posted: {tweet_url}")
+    return 0
+
+
 def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
     env = load_env_file(env_path)
     bearer = get_read_bearer_token(env, env_path)
@@ -2281,6 +3185,9 @@ def fetch_search_rows(
     since_id: Optional[str] = None,
     until_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, str], Dict[str, object]]:
+    # X recent search endpoint only accepts max_results in [10, 100].
+    limit = max(10, min(int(limit), 100))
+    max_pages = max(1, min(int(max_pages), 10))
     all_data: List[Dict[str, object]] = []
     users: Dict[str, str] = {}
     meta: Dict[str, object] = {}
@@ -2347,6 +3254,364 @@ def top_terms(texts: List[str], top_n: int = 8) -> List[Tuple[str, int]]:
     return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 
 
+def calculate_entropy(text: str) -> float:
+    toks = [t.lower() for t in WORD_RE.findall(text)]
+    if not toks:
+        return 0.0
+    return len(set(toks)) / max(1, len(toks))
+
+
+def frog_judge_score(
+    draft: str,
+    voice: str,
+    style: Optional[str] = None,
+    viral_boost: bool = False,
+) -> float:
+    text = str(draft or "").strip()
+    if not text:
+        return 0.0
+    lowered = text.lower()
+
+    specificity = 0.0
+    if re.search(r"\b\d{1,3}\b|\$?sol\b|pipeline|delta|heeming|taxing|benchmark|metric|auth|dedupe", lowered):
+        specificity += 0.65
+    if ":" in text:
+        specificity += 0.20
+    if len(text) >= 120:
+        specificity += 0.15
+    specificity = min(1.0, specificity)
+
+    persona = _voice_persona(voice)
+    slang_bank = {str(s).lower() for s in persona.get("slang_bank", []) if str(s).strip()}
+    slang_hits = sum(1 for s in slang_bank if s and s in lowered)
+    hooks = [str(h).lower() for h in persona.get("hooks", [])]
+    closers = [str(c).lower() for c in persona.get("closers", [])]
+    hook_hit = any(h in lowered for h in hooks[:6]) if hooks else False
+    closer_hit = any(c in lowered for c in closers[:6]) if closers else False
+    frog_energy = min(1.0, (0.25 if hook_hit else 0.0) + (0.25 if closer_hit else 0.0) + min(0.5, slang_hits * 0.12))
+
+    engagement_markers = ("what", "prove", "thread", "your move", "prove me wrong", "spot or perps", "challenge")
+    engagement = 0.0
+    if text.endswith("?") or text.endswith("!"):
+        engagement += 0.6
+    if any(m in lowered for m in engagement_markers):
+        engagement += 0.4
+    engagement = min(1.0, engagement)
+
+    anti_boring = 1.0 if calculate_entropy(text) >= 0.52 and not any(b in lowered for b in ANTI_BORING_BANNED) else 0.0
+
+    voice_hooks = [str(m).lower() for m in (VOICE_CONFIGS.get(voice) or {}).get("hooks", [])]
+    persona_hooks = [str(m).lower() for m in persona.get("hooks", [])]
+    voice_authenticity = 1.0 if any(m in lowered for m in voice_hooks) else 0.0
+    if not voice_authenticity and any(m in lowered for m in persona_hooks[:6]):
+        voice_authenticity = 0.6
+
+    weighted = (
+        specificity * FROG_JUDGE_WEIGHTS["specificity"]
+        + frog_energy * FROG_JUDGE_WEIGHTS["frog_energy"]
+        + engagement * FROG_JUDGE_WEIGHTS["engagement"]
+        + anti_boring * FROG_JUDGE_WEIGHTS["anti_boring"]
+        + voice_authenticity * FROG_JUDGE_WEIGHTS["voice_authenticity"]
+    )
+    base_score = min(100.0, max(0.0, weighted * 100.0))
+
+    viral = 0.0
+    if (
+        "?" in text
+        or "prove me wrong" in lowered
+        or "your move" in lowered
+        or "thread if" in lowered
+        or "send it" in lowered
+    ):
+        viral += float(VIRAL_POTENTIAL_BONUS["question_or_challenge"])
+    if re.search(r"\d", text):
+        viral += float(VIRAL_POTENTIAL_BONUS["number_or_metric"])
+    if any(h.lower() in lowered for h in [str(x) for x in FROG_PERSONA.get("hooks", [])]):
+        viral += float(VIRAL_POTENTIAL_BONUS["frog_hook"])
+    if 140 <= len(text) <= 220:
+        viral += float(VIRAL_POTENTIAL_BONUS["optimal_length"])
+    emoji_count = sum(1 for ch in text if ch in {"🐸", "🔥", "📈", "💀"})
+    if 1 <= emoji_count <= 3:
+        viral += float(VIRAL_POTENTIAL_BONUS["emoji_fit"])
+    if (style or "").lower() in {"contrarian", "story"} or any(
+        x in lowered for x in ("unpopular", "counterintuitively", "contrarian", "pattern under")
+    ):
+        viral += float(VIRAL_POTENTIAL_BONUS["contrarian_signal"])
+
+    viral_weight = 0.9 if viral_boost else 0.6
+    final_score = min(100.0, base_score + (viral * viral_weight))
+    return round(final_score, 1)
+
+
+def _apply_case_style(source: str, replacement: str) -> str:
+    if source.isupper():
+        return replacement.upper()
+    if source[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def sharpen_with_lexicon(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        mapped = HIGH_SIGNAL_LEXICON.get(token.lower())
+        if not mapped:
+            return token
+        return _apply_case_style(token, mapped)
+
+    sharpened = re.sub(r"\b[A-Za-z][A-Za-z'-]*\b", repl, raw)
+    if calculate_entropy(sharpened) < 1.6:
+        sharpened = inject_frog_chaos(sharpened, 0.9)
+    return sanitize_public_text(sharpened)
+
+
+def _resolve_voice_name(voice: str) -> str:
+    name = str(voice or "auto").strip().lower()
+    if name == "auto":
+        rng = random.SystemRandom()
+        names = ["chaotic", "degen", "based", "savage", "operator", "sage", "shitposter"]
+        weights = [25, 15, 20, 10, 10, 10, 10]
+        return rng.choices(names, weights=weights, k=1)[0]
+    if name in VOICE_CONFIGS:
+        return name
+    return "chaotic"
+
+
+def _voice_persona(voice: str) -> Dict[str, object]:
+    resolved = _resolve_voice_name(voice)
+    cfg = VOICE_CONFIGS.get(resolved) or {}
+    base_hooks = list(FROG_PERSONA["hooks"])
+    voice_hooks = [str(x) for x in cfg.get("hooks", []) if isinstance(x, str)]
+    hooks = (voice_hooks + base_hooks)[:12] if voice_hooks else base_hooks
+    slang_base = list(FROG_PERSONA["slang_bank"])
+    slang_extra = [str(x) for x in cfg.get("slang_terms", []) if isinstance(x, str)]
+    slang_bank = slang_base + slang_extra
+    intensity = float(cfg.get("slang_intensity", 0.6) or 0.6)
+    repeat_factor = max(1, int(round(1 + intensity * 2)))
+    slang_bank = slang_bank * repeat_factor
+    return {
+        "hooks": hooks,
+        "closers": list(FROG_PERSONA["closers"]),
+        "slang_bank": slang_bank,
+        "emoji_density": float(cfg.get("emoji_density", FROG_PERSONA["emoji_density"])),
+        "extra_tail": str(cfg.get("extra_tail", "")).strip(),
+        "resolved_voice": resolved,
+    }
+
+
+def inject_frog_chaos(draft: str, topic_entropy: float, persona: Optional[Dict[str, object]] = None) -> str:
+    p = persona if isinstance(persona, dict) else FROG_PERSONA
+    rng = random.SystemRandom()
+    text = str(draft).strip()
+    if rng.random() < 0.40:
+        hooks = [str(x) for x in p.get("hooks", FROG_PERSONA["hooks"])]
+        text = f"{rng.choice(hooks)} {text}"
+    if rng.random() < 0.60:
+        closers = [str(x) for x in p.get("closers", FROG_PERSONA["closers"])]
+        text = f"{text}\n\n{rng.choice(closers)}"
+    if ("sol" in text.lower() or topic_entropy > 0.75) and rng.random() < 0.70:
+        slang_bank = [str(x) for x in p.get("slang_bank", FROG_PERSONA["slang_bank"])]
+        slang = rng.choice(slang_bank)
+        text = text.replace(".", f". {slang}.", 1) if "." in text else f"{text} {slang}"
+    if rng.random() < float(p.get("emoji_density", FROG_PERSONA["emoji_density"])):
+        text = text + " 🐸"
+    return sanitize_public_text(text)
+
+
+def apply_voice(raw: str, voice: str = "auto", topic_entropy: float = 0.0, sharpen: bool = False) -> str:
+    persona = _voice_persona(voice)
+    text = inject_frog_chaos(raw, topic_entropy=topic_entropy, persona=persona)
+    if sharpen:
+        text = sharpen_with_lexicon(text)
+    tail = str(persona.get("extra_tail", "")).strip()
+    if tail and random.SystemRandom().random() < 0.5:
+        text = f"{text}\n\n{tail}"
+    return sanitize_public_text(text)
+
+
+def _http_get_bytes(
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = WEB_REQ_TIMEOUT_SECONDS,
+    max_bytes: int = WEB_REQ_MAX_BYTES,
+    retries: int = WEB_REQ_MAX_RETRIES,
+) -> bytes:
+    req_headers = {"User-Agent": "twitter-engine/1.0", "Accept": "*/*"}
+    if headers:
+        req_headers.update(headers)
+    attempt = 0
+    while True:
+        req = urllib.request.Request(url, headers=req_headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read(max(1, max_bytes))
+        except urllib.error.HTTPError as exc:
+            status = int(exc.code)
+            if attempt < retries and status in {429, 500, 502, 503, 504}:
+                backoff = min(4.0, 0.6 * (2 ** attempt))
+                time.sleep(backoff)
+                attempt += 1
+                continue
+            raise
+        except Exception:
+            if attempt < retries:
+                backoff = min(3.0, 0.5 * (2 ** attempt))
+                time.sleep(backoff)
+                attempt += 1
+                continue
+            raise
+
+
+def _web_cache_get(key: str) -> Optional[Dict[str, List[str]]]:
+    row = WEB_INSPIRATION_CACHE.get(key)
+    if not isinstance(row, dict):
+        return None
+    expires_at = float(row.get("expires_at", 0.0) or 0.0)
+    if expires_at <= time.time():
+        WEB_INSPIRATION_CACHE.pop(key, None)
+        return None
+    val = row.get("value")
+    if not isinstance(val, dict):
+        return None
+    return val
+
+
+def _web_cache_set(key: str, value: Dict[str, List[str]], ttl_seconds: int = WEB_INSPIRATION_CACHE_TTL_SECONDS) -> None:
+    WEB_INSPIRATION_CACHE[key] = {
+        "expires_at": time.time() + max(1, ttl_seconds),
+        "value": value,
+    }
+
+
+def fetch_news_rss_headlines(query: str, limit: int = 8, timeout: int = WEB_REQ_TIMEOUT_SECONDS) -> List[str]:
+    q = query.strip()
+    if not q:
+        return []
+    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+        {"q": q, "hl": "en-US", "gl": "US", "ceid": "US:en"}
+    )
+    try:
+        raw = _http_get_bytes(
+            url=url,
+            headers={"Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.1"},
+            timeout=timeout,
+            max_bytes=WEB_REQ_MAX_BYTES,
+        )
+    except Exception:
+        return []
+
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return []
+
+    out: List[str] = []
+    for item in root.findall(".//item"):
+        title = ""
+        title_el = item.find("title")
+        if title_el is not None and title_el.text:
+            title = title_el.text.strip()
+        if not title:
+            continue
+        if " - " in title:
+            title = title.split(" - ", 1)[0].strip()
+        title = sanitize_public_text(title)
+        if not title:
+            continue
+        out.append(title)
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
+def fetch_hn_headlines(query: str, limit: int = 6, timeout: int = WEB_REQ_TIMEOUT_SECONDS) -> List[str]:
+    q = query.strip()
+    if not q:
+        return []
+    params = urllib.parse.urlencode(
+        {"query": q, "tags": "story", "hitsPerPage": max(1, min(limit, 20))}
+    )
+    url = f"https://hn.algolia.com/api/v1/search?{params}"
+    try:
+        raw = _http_get_bytes(
+            url=url,
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+            max_bytes=WEB_REQ_MAX_BYTES,
+        )
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    hits = payload.get("hits") if isinstance(payload, dict) else None
+    if not isinstance(hits, list):
+        return []
+    out: List[str] = []
+    for row in hits:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or row.get("story_title") or "").strip()
+        if not title:
+            continue
+        title = sanitize_public_text(title)
+        if not title:
+            continue
+        out.append(title)
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
+def gather_web_inspiration(
+    query: str,
+    news_limit: int = 8,
+    hn_limit: int = 6,
+) -> Dict[str, List[str]]:
+    q = sanitize_public_text(query).strip()
+    if not q:
+        return {"news": [], "hn": [], "items": []}
+    cache_key = f"{q.lower()}|n{max(1, news_limit)}|h{max(1, hn_limit)}"
+    cached = _web_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    news_items = fetch_news_rss_headlines(query=q, limit=max(1, min(news_limit, 12)))
+    hn_items = fetch_hn_headlines(query=q, limit=max(1, min(hn_limit, 12)))
+    seen: Set[str] = set()
+    merged: List[str] = []
+    for item in news_items + hn_items:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    out = {"news": news_items, "hn": hn_items, "items": merged}
+    _web_cache_set(cache_key, out)
+    return out
+
+
+def maybe_collect_web_inspiration(
+    enabled: bool,
+    query: str,
+    item_limit: int = 8,
+) -> Tuple[List[str], Optional[str]]:
+    if not enabled:
+        return [], None
+    try:
+        pack = gather_web_inspiration(
+            query=query,
+            news_limit=max(1, min(item_limit, 12)),
+            hn_limit=max(1, min(item_limit, 12)),
+        )
+        items = list(pack.get("items", []))[: max(1, min(item_limit, 12))]
+        return items, None
+    except Exception as exc:
+        return [], str(exc)
+
+
 def make_inspiration_drafts(topic: str, sample_texts: List[str], draft_count: int) -> List[str]:
     terms = [t for t, _ in top_terms(sample_texts, top_n=10)]
     anchors = terms[: min(3, len(terms))]
@@ -2393,8 +3658,17 @@ def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
 
     sample = rows[: min(len(rows), args.sample_size)]
     sample_texts = [str(r.get("text", "")) for r in sample if isinstance(r, dict)]
-    terms = top_terms(sample_texts, top_n=8)
-    drafts = make_inspiration_drafts(args.topic or "this space", sample_texts, args.draft_count)
+    web_items: List[str] = []
+    web_query = (args.web_query or args.topic or "ai agents automation reliability").strip()
+    if bool(getattr(args, "web_inspiration", True)):
+        web_items, _ = maybe_collect_web_inspiration(
+            enabled=True,
+            query=web_query,
+            item_limit=int(getattr(args, "web_items", 8)),
+        )
+    all_signal_texts = sample_texts + web_items
+    terms = top_terms(all_signal_texts, top_n=8)
+    drafts = make_inspiration_drafts(args.topic or "this space", all_signal_texts, args.draft_count)
 
     if args.save:
         out = Path(args.save)
@@ -2403,9 +3677,11 @@ def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
             "query": query,
             "count": len(rows),
             "sample_size": len(sample),
+            "web_count": len(web_items),
             "top_terms": terms,
             "drafts": drafts,
             "sample": sample,
+            "web_items": web_items,
         }
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"Saved inspiration output -> {out}")
@@ -2416,9 +3692,11 @@ def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
                 {
                     "query": query,
                     "count": len(rows),
+                    "web_count": len(web_items),
                     "top_terms": terms,
                     "drafts": drafts,
                     "sample": sample,
+                    "web_items": web_items,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -2428,6 +3706,8 @@ def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
 
     print(f"Query: {query}")
     print(f"Fetched: {len(rows)} tweets")
+    if web_items:
+        print(f"Web signal items: {len(web_items)}")
     print("Top themes:")
     for term, count in terms:
         print(f"- {term} ({count})")
@@ -2444,6 +3724,10 @@ def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
         text = str(row.get("text", "")).replace("\n", " ").strip()
         print(f"{i}. @{username} | {tid}")
         print(f"   {text}")
+    if web_items:
+        print("Web headlines:")
+        for i, item in enumerate(web_items, start=1):
+            print(f"{i}. {item}")
     return 0
 
 
@@ -2473,7 +3757,7 @@ def config_status(env_path: Path) -> Dict[str, object]:
         next_steps.append("run auth-login")
     else:
         next_steps.append("run doctor")
-        next_steps.append("run post --text \"hello from Open Claw\"")
+        next_steps.append("run post --text \"hello from Twitter Engine\"")
 
     return {
         "env_file": str(env_path),
@@ -2684,30 +3968,57 @@ def cmd_app_settings(env_path: Path) -> int:
 
 
 def cmd_walkthrough() -> int:
-    print("Open Claw Posting Walkthrough")
+    print("Twitter Engine Posting Walkthrough")
     print("1) Run `setup` and enter OAuth 2.0 Client ID + Client Secret.")
     print("2) Run `app-settings` and mirror those values in Twitter Developer Portal.")
     print("3) Run `auth-login` to open browser consent and generate OAuth2 tokens.")
     print("4) Paste callback URL back into the CLI.")
     print("5) `doctor` runs automatically to validate readiness.")
-    print("6) Post with: `post --text \"hello from Open Claw\"`")
+    print("6) Post with: `post --text \"hello from Twitter Engine\"`")
     return 0
 
 
-def cmd_openclaw_status(env_path: Path) -> int:
+def cmd_set_bearer_token(env_path: Path, args: argparse.Namespace) -> int:
+    env = load_env_file(env_path)
+    token = (getattr(args, "token", None) or "").strip()
+    if not token:
+        token = getpass.getpass("Paste TWITTER_BEARER_TOKEN: ").strip()
+    if not token:
+        raise TwitterHelperError("No bearer token provided.")
+
+    env["TWITTER_BEARER_TOKEN"] = token
+    write_env_file(env_path, env)
+    print(f"Saved TWITTER_BEARER_TOKEN to {env_path}")
+
+    if getattr(args, "no_verify", False):
+        return 0
+
+    status, body = api_get_with_token(
+        f"{API_BASE}/tweets/search/recent?query=openclaw%20lang%3Aen%20-is%3Aretweet&max_results=10",
+        token,
+    )
+    if status >= 400:
+        print("Bearer token verification failed.")
+        print(json.dumps(body, ensure_ascii=False))
+        return 1
+    print("Bearer token verification passed.")
+    return 0
+
+
+def cmd_engine_status(env_path: Path) -> int:
     status = config_status(env_path)
     print(json.dumps(status, ensure_ascii=False, indent=2))
     return 0
 
 
-def cmd_openclaw(env_path: Path, args: argparse.Namespace) -> int:
+def cmd_engine_check(env_path: Path, args: argparse.Namespace) -> int:
     status = config_status(env_path)
 
     if getattr(args, "json", False):
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0
 
-    print("Open Claw Readiness Check")
+    print("Twitter Engine Readiness Check")
     print(f"Env file: {status['env_file']}")
     print(f"Env exists: {status['env_exists']}")
     print(f"Has client id: {status['has_client_id']}")
@@ -2718,17 +4029,17 @@ def cmd_openclaw(env_path: Path, args: argparse.Namespace) -> int:
 
     doctor_rc = cmd_doctor(env_path)
     if doctor_rc != 0:
-        print("Open Claw is not ready to post yet.")
+        print("Twitter Engine is not ready to post yet.")
         return doctor_rc
 
-    print("Open Claw is ready to post.")
-    print("Try: openclaw-autopost --text \"Open Claw status update\"")
+    print("Twitter Engine is ready to post.")
+    print("Try: engine-autopost --text \"Status update\"")
     return 0
 
 
 def cmd_seamless(env_path: Path, args: argparse.Namespace) -> int:
     print("seamless: diagnose -> repair(if needed) -> reply-quick")
-    report = diagnose_openclaw(
+    report = diagnose_engine(
         env_path=env_path,
         skip_network=bool(getattr(args, "skip_network", False)),
         reply_target_id=None,
@@ -2755,7 +4066,7 @@ def cmd_seamless(env_path: Path, args: argparse.Namespace) -> int:
             )
             rc = cmd_auth_login(env_path, auth_args)
             if rc == 0:
-                report = diagnose_openclaw(
+                report = diagnose_engine(
                     env_path=env_path,
                     skip_network=bool(getattr(args, "skip_network", False)),
                     reply_target_id=None,
@@ -2783,14 +4094,97 @@ def cmd_seamless(env_path: Path, args: argparse.Namespace) -> int:
     return cmd_reply_engine(quick_args)
 
 
-def cmd_run_twitter_helper(env_path: Path, args: argparse.Namespace) -> int:
+def _run_reply_preview(
+    handle: str,
+    since_id: Optional[str],
+    report_path: str = "data/mentions_report.json",
+    log_path: str = "data/replies.jsonl",
+    post: bool = False,
+    verify_post: bool = True,
+) -> Tuple[bool, Optional[Dict[str, object]]]:
+    try:
+        from reply_engine.twitter_helper import run_mentions_workflow
+    except Exception as exc:
+        raise TwitterHelperError(
+            "Reply engine not ready. Install dependencies with: pip install -r requirements-reply-engine.txt"
+        ) from exc
+
+    result = run_mentions_workflow(
+        handle=handle,
+        mention_limit=1,
+        since_id=since_id,
+        draft_count=1,
+        pick=1,
+        post=post,
+        max_posts=1,
+        approval_queue=False,
+        min_confidence=70,
+        web_enrich=False,
+        web_context_items=0,
+        fetch_context=False,
+        verify_post=verify_post,
+        log_path=log_path,
+        report_path=report_path,
+    )
+    rows = result.get("results", [])
+    if not isinstance(rows, list) or not rows:
+        return False, None
+    first = rows[0]
+    if not isinstance(first, dict):
+        return False, None
+    return str(first.get("status", "")) in {"drafted", "posted"}, first
+
+
+def ensure_reply_scan_token(env_path: Path) -> str:
+    env = load_env_file(env_path)
+    token = get_read_bearer_token(env, env_path)
+    # Keep downstream reply-engine module aligned with validated token.
+    os.environ["TWITTER_BEARER_TOKEN"] = token
+    return token
+
+
+def cmd_twitter_engine(env_path: Path, args: argparse.Namespace) -> int:
     helper_path = TOOL_ROOT / "src" / "twitter_helper.py"
-    wrapper_path = TOOL_ROOT / "run-twitter-helper"
-    print("Run Twitter Helper")
+    wrapper_path = TOOL_ROOT / "twitter-engine"
+    print("Twitter Engine")
     print(f"Workspace: {TOOL_ROOT}")
     print(f"Helper: {helper_path}")
     print(f"Wrapper: {wrapper_path}")
     print(f"Env file: {env_path.resolve()}")
+
+    barrier = get_rate_limit_barrier_status()
+    if barrier.get("active"):
+        print("Decision: diagnose")
+        print(
+            f"Rate-limit barrier active (~{int(barrier.get('wait_seconds', 0))}s, "
+            f"source={barrier.get('source', 'unknown')})."
+        )
+        diag_args = argparse.Namespace(
+            json=bool(getattr(args, "json_diagnose", False)),
+            skip_network=True,
+            reply_target_id=None,
+            no_repair_auth=True,
+        )
+        return cmd_auto_diagnose(env_path, diag_args)
+
+    explicit_post_intent = bool(getattr(args, "text", None) or getattr(args, "file", None))
+    effective_mode = args.mode
+    if args.mode == "auto" and explicit_post_intent:
+        effective_mode = "post"
+
+    if effective_mode in {"auto", "diagnose"}:
+        report = diagnose_engine(env_path=env_path, skip_network=False, reply_target_id=None)
+        if effective_mode == "diagnose" or not bool((report.get("posting") or {}).get("ready")):
+            print("Decision: diagnose")
+            diag_args = argparse.Namespace(
+                json=bool(getattr(args, "json_diagnose", False)),
+                skip_network=False,
+                reply_target_id=None,
+                no_repair_auth=bool(getattr(args, "no_repair_auth", False)),
+            )
+            return cmd_auto_diagnose(env_path, diag_args)
+    else:
+        report = {}
 
     env = load_env_file(env_path)
     has_client_id = bool(get_env_value(env, "TWITTER_CLIENT_ID"))
@@ -2809,7 +4203,7 @@ def cmd_run_twitter_helper(env_path: Path, args: argparse.Namespace) -> int:
         if not sys.stdin.isatty():
             raise TwitterHelperError(
                 "Auth repair requires interactive OAuth callback input. "
-                "Run `auth-login` once in an interactive terminal, then rerun `run-twitter-helper`."
+                "Run `auth-login` once in an interactive terminal, then rerun `twitter-engine`."
             )
         print("Attempting automatic OAuth repair via browser login...")
         auth_args = argparse.Namespace(
@@ -2822,23 +4216,113 @@ def cmd_run_twitter_helper(env_path: Path, args: argparse.Namespace) -> int:
         if doctor_rc != 0:
             return doctor_rc
 
+    if effective_mode in {"auto", "reply"}:
+        reply_scan_ready = bool((report.get("reply_scan") or {}).get("ready")) if isinstance(report, dict) else False
+        if effective_mode == "reply" and not reply_scan_ready:
+            print("Decision: diagnose")
+            diag_args = argparse.Namespace(
+                json=False,
+                skip_network=False,
+                reply_target_id=None,
+                no_repair_auth=bool(getattr(args, "no_repair_auth", False)),
+            )
+            return cmd_auto_diagnose(env_path, diag_args)
+        if reply_scan_ready:
+            try:
+                ensure_reply_scan_token(env_path)
+            except Exception as exc:
+                if effective_mode == "reply":
+                    raise TwitterHelperError(
+                        f"Reply mode requires valid read token: {exc}"
+                    ) from exc
+                print(f"[WARN] reply token validation failed: {exc}")
+            try:
+                has_candidate, item = _run_reply_preview(
+                    handle=args.reply_handle,
+                    since_id=args.reply_since_id,
+                    report_path=args.report_path,
+                    log_path=args.log_path,
+                )
+            except Exception as exc:
+                print(f"[WARN] reply preview unavailable: {exc}")
+                has_candidate, item = (False, None)
+            if has_candidate and item is not None:
+                print("Decision: reply")
+                print(f"{item.get('status')} | {item.get('tweet_id')} | @{item.get('author')}")
+                picked = str(item.get("picked_text", "")).strip()
+                if picked:
+                    print(picked)
+                return 0
+            if effective_mode == "reply":
+                print("Decision: reply")
+                print("No suitable reply candidate found.")
+                return 0
+
+    if (
+        effective_mode == "auto"
+        and not explicit_post_intent
+        and bool(getattr(args, "gather_when_no_reply", True))
+    ):
+        try:
+            snapshot = gather_data_snapshot(
+                env_path=env_path,
+                handle=args.reply_handle,
+                query=getattr(args, "gather_query", 'openclaw OR "local ai agent" lang:en -is:retweet'),
+                limit=getattr(args, "gather_limit", 20),
+                max_pages=getattr(args, "gather_max_pages", 1),
+            )
+            search_count = int(snapshot.get("search_count", 0))
+            mentions_count = int(snapshot.get("mentions_count", 0))
+            if search_count > 0 or mentions_count > 0:
+                out = Path(getattr(args, "gather_output", "data/engine_data_snapshot.json"))
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+                print("Decision: gather-data")
+                print(f"Saved data snapshot -> {out}")
+                print(f"Mentions: {mentions_count} | Search: {search_count}")
+                return 0
+        except Exception as exc:
+            print(f"[WARN] gather-data step failed: {exc}")
+
     if args.no_post:
         print("Readiness is healthy. Skipping post (--no-post).")
         return 0
 
+    print("Decision: post")
     cfg, env_values = resolve_config(env_path)
     base_text = args.text
     if args.file:
         base_text = Path(args.file).read_text(encoding="utf-8").strip()
     if not base_text:
-        base_text = generate_reflective_post_text()
+        web_items, web_err = maybe_collect_web_inspiration(
+            enabled=bool(getattr(args, "web_inspiration", True)),
+            query=str(getattr(args, "web_query", "ai agents automation reliability")),
+            item_limit=int(getattr(args, "web_items", 8)),
+        )
+        if web_err:
+            print(f"[WARN] web inspiration unavailable: {web_err}")
+        elif web_items:
+            print(f"[INFO] web inspiration items: {len(web_items)}")
+        base_text = generate_reflective_post_text(
+            topic=str(getattr(args, "web_query", "ai agents")),
+            inspiration_texts=web_items,
+            style=str(getattr(args, "style", "auto") or "auto"),
+            voice=str(getattr(args, "voice", "auto") or "auto"),
+            viral_pack=str(getattr(args, "viral_pack", "") or ""),
+            anti_boring=bool(getattr(args, "anti_boring", False)),
+            sharpen=bool(getattr(args, "sharpen", False)),
+            judge_threshold=float(getattr(args, "judge_threshold", 82.0)),
+            max_attempts=int(getattr(args, "max_attempts", 7)),
+            ensemble_size=int(getattr(args, "ensemble", 1)),
+            viral_boost=bool(getattr(args, "viral_boost", False)),
+        )
     unique_text = make_unique_public_tweet(base_text)
     post_args = argparse.Namespace(text=unique_text, file=None, dry_run=args.dry_run)
-    return cmd_openclaw_autopost(cfg, env_path, env_values, post_args)
+    return cmd_engine_autopost(cfg, env_path, env_values, post_args)
 
 
 def cmd_restart_setup(env_path: Path, args: argparse.Namespace) -> int:
-    print("Twitter Helper Restart Recovery")
+    print("Twitter Engine Restart Recovery")
     print("Goal: restore setup/auth health after restart without posting.")
 
     env = load_env_file(env_path)
@@ -2890,7 +4374,7 @@ def post_with_retry(
     media_ids: Optional[List[str]] = None,
     unique_on_duplicate: bool = False,
 ) -> Tuple[Config, Tuple[int, Dict[str, object]]]:
-    run_tag = unique_marker("openclaw")
+    run_tag = unique_marker("twitter-engine")
     fresh = ensure_auth(cfg, env_path, env_values)
     status, body = post_tweet(
         fresh,
@@ -2933,7 +4417,7 @@ def read_text_from_args(args: argparse.Namespace) -> str:
     return text
 
 
-def cmd_openclaw_autopost(
+def cmd_engine_autopost(
     cfg: Config, env_path: Path, env_values: Dict[str, str], args: argparse.Namespace
 ) -> int:
     base_text = read_text_from_args(args)
@@ -2944,7 +4428,7 @@ def cmd_openclaw_autopost(
         print(text)
         return 0
 
-    print(f"Posting Open Claw auto-tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
+    print(f"Posting Twitter Engine auto-tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
     fresh, (status, body) = post_with_retry(cfg, env_path, env_values, text)
     if status < 200 or status >= 300:
         raise TwitterHelperError(
@@ -2956,7 +4440,14 @@ def cmd_openclaw_autopost(
         raise TwitterHelperError("Auto-post returned no tweet id.")
     _, tweet_url = verify_post_visible(fresh, str(tweet_id))
     record_recent_post(text)
-    print(f"Open Claw auto-tweet posted and verified: id={tweet_id}")
+    record_tweet_memory(
+        kind="post",
+        text=text,
+        tweet_id=str(tweet_id),
+        url=tweet_url,
+        meta={"source": "engine-autopost"},
+    )
+    print(f"Twitter Engine auto-tweet posted and verified: id={tweet_id}")
     print(f"URL: {tweet_url}")
     return 0
 
@@ -3054,7 +4545,7 @@ def cmd_auth_login(env_path: Path, args: argparse.Namespace) -> int:
     auto_text = (
         args.auto_post_text.strip()
         if getattr(args, "auto_post_text", None)
-        else "Open Claw auth complete and posting pipeline is live."
+        else "Twitter Engine auth complete and posting pipeline is live."
     )
 
     cfg = Config(
@@ -3066,11 +4557,11 @@ def cmd_auth_login(env_path: Path, args: argparse.Namespace) -> int:
     env_values = load_env_file(env_path)
     auto_args = argparse.Namespace(text=auto_text, file=None, dry_run=False)
     print("Auto-post requested. Posting confirmation tweet...")
-    return cmd_openclaw_autopost(cfg, env_path, env_values, auto_args)
+    return cmd_engine_autopost(cfg, env_path, env_values, auto_args)
 
 
 def cmd_doctor(env_path: Path) -> int:
-    print("Twitter Helper Doctor")
+    print("Twitter Engine Doctor")
     print(f"Env file: {env_path}")
 
     env = load_env_file(env_path)
@@ -3130,14 +4621,14 @@ def cmd_doctor(env_path: Path) -> int:
         remaining = headers.get("x-rate-limit-remaining", "N/A")
         reset = headers.get("x-rate-limit-reset", "N/A")
         print(f"[INFO] Rate limit remaining: {remaining} (reset: {reset})")
-        print("You're ready. Try: post --text \"hello world\"")
+        print("You're ready. Try: post --text \"hello from twitter-engine\"")
         return 0
     except TwitterHelperError as exc:
         print(f"[FAIL] {exc}")
         return 1
 
 
-def diagnose_openclaw(
+def diagnose_engine(
     env_path: Path,
     skip_network: bool = False,
     reply_target_id: Optional[str] = None,
@@ -3148,6 +4639,7 @@ def diagnose_openclaw(
     report: Dict[str, object] = {
         "env_file": str(env_path),
         "env_exists": env_path.exists(),
+        "rate_limit": get_rate_limit_barrier_status(),
         "posting": {"ready": False, "issues": []},
         "reply_scan": {"ready": False, "issues": []},
         "reply_post": {"ready": False, "issues": []},
@@ -3158,6 +4650,18 @@ def diagnose_openclaw(
     reply_scan_issues: List[str] = []
     reply_post_issues: List[str] = []
     actions: List[str] = []
+
+    rate_info = report.get("rate_limit", {})
+    if isinstance(rate_info, dict) and bool(rate_info.get("active")):
+        wait_seconds = int(rate_info.get("wait_seconds", 0))
+        src = str(rate_info.get("source", "")).strip()
+        posting_issues.append(
+            f"Rate-limit barrier active (~{wait_seconds}s remaining, source={src or 'unknown'})."
+        )
+        reply_scan_issues.append(
+            f"Rate-limit barrier active (~{wait_seconds}s remaining, source={src or 'unknown'})."
+        )
+        actions.append(f"wait {wait_seconds}s before retrying read/post diagnostics")
 
     if not report["env_exists"]:
         posting_issues.append("Missing .env file.")
@@ -3206,7 +4710,12 @@ def diagnose_openclaw(
             f"{API_BASE}/tweets/search/recent?query=openclaw%20lang%3Aen%20-is%3Aretweet&max_results=10",
             bearer,
         )
-        if scan_status >= 400:
+        if scan_status == 429:
+            reply_scan_issues.append(
+                "Bearer scan temporarily rate-limited (429)."
+            )
+            actions.append("wait for rate-limit barrier cooldown, then retry")
+        elif scan_status >= 400:
             reply_scan_issues.append(
                 f"Bearer scan check failed ({scan_status}): {json.dumps(scan_body, ensure_ascii=False)}"
             )
@@ -3258,10 +4767,22 @@ def diagnose_openclaw(
     return report
 
 
+def diagnose_openclaw(
+    env_path: Path,
+    skip_network: bool = False,
+    reply_target_id: Optional[str] = None,
+) -> Dict[str, object]:
+    return diagnose_engine(
+        env_path=env_path,
+        skip_network=skip_network,
+        reply_target_id=reply_target_id,
+    )
+
+
 def cmd_auto_diagnose(env_path: Path, args: argparse.Namespace) -> int:
-    print("Open Claw Auto Diagnose")
+    print("Twitter Engine Auto Diagnose")
     print(f"Env file: {env_path}")
-    report = diagnose_openclaw(
+    report = diagnose_engine(
         env_path=env_path,
         skip_network=args.skip_network,
         reply_target_id=args.reply_target_id,
@@ -3290,7 +4811,7 @@ def cmd_auto_diagnose(env_path: Path, args: argparse.Namespace) -> int:
             rc = cmd_auth_login(env_path, auth_args)
             if rc == 0:
                 print("Re-running diagnostics after OAuth2 repair...")
-                report = diagnose_openclaw(
+                report = diagnose_engine(
                     env_path=env_path,
                     skip_network=args.skip_network,
                     reply_target_id=args.reply_target_id,
@@ -3299,6 +4820,12 @@ def cmd_auto_diagnose(env_path: Path, args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
+        rate_info = report.get("rate_limit", {})
+        if isinstance(rate_info, dict) and bool(rate_info.get("active")):
+            print(
+                f"[WARN] rate-limit barrier active: wait ~{int(rate_info.get('wait_seconds', 0))}s "
+                f"(source={rate_info.get('source', 'unknown')})"
+            )
         posting = report.get("posting", {})
         reply_scan = report.get("reply_scan", {})
         reply_post = report.get("reply_post", {})
@@ -3347,7 +4874,35 @@ def cmd_check_auth(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> i
 def cmd_post(
     cfg: Config, env_path: Path, env_values: Dict[str, str], args: argparse.Namespace
 ) -> int:
-    text = read_text_from_args(args)
+    if args.text or args.file:
+        text = read_text_from_args(args)
+    else:
+        if getattr(args, "in_reply_to", None):
+            raise TwitterHelperError("Reply posts require --text or --file.")
+        web_items, web_err = maybe_collect_web_inspiration(
+            enabled=True,
+            query="ai agents automation reliability openclaw",
+            item_limit=8,
+        )
+        if web_err:
+            print(f"[WARN] web inspiration unavailable: {web_err}")
+        elif web_items:
+            print(f"[INFO] web inspiration items: {len(web_items)}")
+        text = generate_reflective_post_text(
+            topic="ai agents automation reliability",
+            inspiration_texts=web_items,
+            style=str(getattr(args, "style", "auto") or "auto"),
+            voice=str(getattr(args, "voice", "auto") or "auto"),
+            viral_pack=str(getattr(args, "viral_pack", "") or ""),
+            anti_boring=bool(getattr(args, "anti_boring", False)),
+            sharpen=bool(getattr(args, "sharpen", False)),
+            judge_threshold=float(getattr(args, "judge_threshold", 82.0)),
+            max_attempts=int(getattr(args, "max_attempts", 7)),
+            ensemble_size=int(getattr(args, "ensemble", 1)),
+            viral_boost=bool(getattr(args, "viral_boost", False)),
+        )
+        text = make_unique_public_tweet(text)
+        print("[INFO] No --text provided; generated autonomous post text.")
     text = sanitize_public_text(text)
     if getattr(args, "unique", False):
         text = make_unique_public_tweet(text)
@@ -3416,6 +4971,21 @@ def cmd_post(
     _, tweet_url = verify_post_visible(fresh, str(tweet_id))
     if args.in_reply_to:
         mark_replied_target(str(args.in_reply_to), str(tweet_id), source="post")
+        record_tweet_memory(
+            kind="reply",
+            text=text,
+            tweet_id=str(tweet_id),
+            url=tweet_url,
+            meta={"in_reply_to": str(args.in_reply_to), "source": "post"},
+        )
+    else:
+        record_tweet_memory(
+            kind="post",
+            text=text,
+            tweet_id=str(tweet_id),
+            url=tweet_url,
+            meta={"source": "post"},
+        )
     print(f"Tweet posted and verified: id={tweet_id}")
     print(f"URL: {tweet_url}")
     return 0
@@ -3450,6 +5020,13 @@ def cmd_thread(
 
         parent_id = tweet_id
         _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+        record_tweet_memory(
+            kind="thread_post",
+            text=text,
+            tweet_id=str(tweet_id),
+            url=tweet_url,
+            meta={"index": idx, "total": len(tweets)},
+        )
         print(f"Posted and verified {idx}/{len(tweets)}: id={tweet_id}")
         print(f"URL: {tweet_url}")
 
@@ -3459,7 +5036,7 @@ def cmd_thread(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Open Claw Twitter helper",
+        description="Twitter Engine",
         epilog="Recommended flow: setup -> app-settings -> auth-login -> doctor -> post",
     )
     parser.add_argument(
@@ -3509,6 +5086,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("doctor", help="Run guided diagnostics for config + auth")
+    p_set_bearer = sub.add_parser(
+        "set-bearer-token",
+        help="Set or replace TWITTER_BEARER_TOKEN in env file",
+    )
+    p_set_bearer.add_argument(
+        "--token",
+        help="Bearer token value (if omitted, prompt securely)",
+    )
+    p_set_bearer.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip live API verification after saving token",
+    )
     p_diag = sub.add_parser(
         "auto-diagnose",
         help="Auto-diagnose posting and replying readiness, with optional OAuth2 self-repair",
@@ -3534,16 +5124,75 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("app-settings", help="Print exact Twitter app settings to use")
     sub.add_parser("walkthrough", help="Print end-to-end setup/posting walkthrough")
-    sub.add_parser("openclaw-status", help="Print machine-readable readiness JSON")
+    sub.add_parser(
+        "engine-status",
+        aliases=["openclaw-status"],
+        help="Print machine-readable readiness JSON",
+    )
     sub.add_parser("check-auth", help="Validate auth and print current account")
+    p_memory = sub.add_parser("memory", help="Show tweet/reply memory history")
+    p_memory.add_argument("--limit", type=int, default=20)
+    p_memory.add_argument("--json", action="store_true")
+    p_memory.add_argument("--account-name", help="Optional account override for viewing memory")
 
     p_post = sub.add_parser("post", help="Post a single tweet")
     p_post.add_argument("--text", help="Tweet text")
     p_post.add_argument("--file", help="Path to text file")
     p_post.add_argument(
+        "--style",
+        choices=["auto", "contrarian", "operator", "story"],
+        default="auto",
+        help="Autonomous post style when no --text/--file is provided",
+    )
+    p_post.add_argument(
+        "--voice",
+        choices=["auto", "chaotic", "degen", "based", "savage", "operator", "sage", "shitposter"],
+        default="auto",
+        help="Autonomous voice profile for generated posts",
+    )
+    p_post.add_argument(
+        "--viral-pack",
+        choices=["auto", "light", "medium", "nuclear", "alpha", "chaos", "infinite"],
+        default="",
+        help="Single-flag preset for voice/style/ensemble/judge/viral settings",
+    )
+    p_post.add_argument(
+        "--anti-boring",
+        action="store_true",
+        help="Enable frog-chaos anti-boring generation constraints for autonomous posts",
+    )
+    p_post.add_argument(
+        "--sharpen",
+        action="store_true",
+        help="Apply high-signal lexicon sharpening to autonomous post generation",
+    )
+    p_post.add_argument(
+        "--judge-threshold",
+        type=float,
+        default=82.0,
+        help="Frog Judge minimum score (0-100) required for autonomous post acceptance",
+    )
+    p_post.add_argument(
+        "--max-attempts",
+        type=int,
+        default=7,
+        help="Max autonomous regeneration attempts before returning best draft",
+    )
+    p_post.add_argument(
+        "--ensemble",
+        type=int,
+        default=1,
+        help="Generate N variants per attempt and pick the top-scoring draft (max 8)",
+    )
+    p_post.add_argument(
+        "--viral-boost",
+        action="store_true",
+        help="Increase viral-potential weighting in Frog Judge",
+    )
+    p_post.add_argument(
         "--unique",
         action="store_true",
-        help="Append UTC timestamp suffix to avoid duplicate-content errors",
+        help="Force uniqueness handling for duplicate-content errors",
     )
     p_post.add_argument(
         "--in-reply-to",
@@ -3569,8 +5218,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_oc_auto = sub.add_parser(
-        "openclaw-autopost",
-        help="Open Claw integration post",
+        "engine-autopost",
+        aliases=["openclaw-autopost"],
+        help="Twitter Engine integration post",
     )
     p_oc_auto.add_argument("--text", help="Base tweet text")
     p_oc_auto.add_argument("--file", help="Path to base text file")
@@ -3580,8 +5230,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print final unique tweet text instead of posting",
     )
     p_openclaw = sub.add_parser(
-        "openclaw",
-        help="Run Open Claw readiness check for posting",
+        "engine-check",
+        aliases=["openclaw"],
+        help="Run Twitter Engine readiness check for posting",
     )
     p_openclaw.add_argument(
         "--json",
@@ -3593,11 +5244,53 @@ def build_parser() -> argparse.ArgumentParser:
     p_thread.add_argument("--file", required=True, help="Path to thread text file")
 
     p_run = sub.add_parser(
-        "run-twitter-helper",
-        help="One-command Open Claw flow: check, repair auth if needed, then post unique tweet",
+        "twitter-engine",
+        aliases=["run-twitter-helper"],
+        help="One-command Twitter Engine flow: check, repair auth if needed, then post unique tweet",
+    )
+    p_run.add_argument(
+        "--mode",
+        choices=["auto", "post", "reply", "diagnose"],
+        default="auto",
+        help="Decision mode (default: auto)",
     )
     p_run.add_argument("--text", help="Base tweet text")
     p_run.add_argument("--file", help="Path to base text file")
+    p_run.add_argument(
+        "--reply-handle",
+        default="OpenClawAI",
+        help="Handle to inspect for reply opportunities in auto/reply mode",
+    )
+    p_run.add_argument(
+        "--reply-since-id",
+        help="Only consider mentions newer than this tweet ID in auto/reply mode",
+    )
+    p_run.add_argument(
+        "--no-repair-auth",
+        action="store_true",
+        help="Disable interactive OAuth2 repair attempt during diagnose mode",
+    )
+    p_run.add_argument(
+        "--json-diagnose",
+        action="store_true",
+        help="When mode triggers diagnosis, print diagnostic report as JSON",
+    )
+    p_run.add_argument("--log-path", default="data/replies.jsonl")
+    p_run.add_argument("--report-path", default="data/mentions_report.json")
+    p_run.add_argument(
+        "--gather-when-no-reply",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="In auto mode, gather data snapshot when no reply candidate is found",
+    )
+    p_run.add_argument(
+        "--gather-query",
+        default='openclaw OR "local ai agent" lang:en -is:retweet',
+        help="Query used for gather-data decision step in auto mode",
+    )
+    p_run.add_argument("--gather-limit", type=int, default=20)
+    p_run.add_argument("--gather-max-pages", type=int, default=1)
+    p_run.add_argument("--gather-output", default="data/engine_data_snapshot.json")
     p_run.add_argument(
         "--no-post",
         action="store_true",
@@ -3607,6 +5300,160 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print final tweet text instead of posting",
+    )
+    p_run.add_argument(
+        "--web-inspiration",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use internet headlines/search signals to inspire generated posts",
+    )
+    p_run.add_argument(
+        "--web-query",
+        default="ai agents automation reliability",
+        help="Query used for internet inspiration in post mode",
+    )
+    p_run.add_argument(
+        "--web-items",
+        type=int,
+        default=8,
+        help="Max inspiration items pulled from internet sources",
+    )
+    p_run.add_argument(
+        "--style",
+        choices=["auto", "contrarian", "operator", "story"],
+        default="auto",
+        help="Autonomous post style when mode resolves to post",
+    )
+    p_run.add_argument(
+        "--voice",
+        choices=["auto", "chaotic", "degen", "based", "savage", "operator", "sage", "shitposter"],
+        default="auto",
+        help="Autonomous voice profile when mode resolves to post",
+    )
+    p_run.add_argument(
+        "--viral-pack",
+        choices=["auto", "light", "medium", "nuclear", "alpha", "chaos", "infinite"],
+        default="",
+        help="Single-flag preset for voice/style/ensemble/judge/viral settings",
+    )
+    p_run.add_argument(
+        "--anti-boring",
+        action="store_true",
+        help="Enable frog-chaos anti-boring generation constraints for autonomous posts",
+    )
+    p_run.add_argument(
+        "--sharpen",
+        action="store_true",
+        help="Apply high-signal lexicon sharpening to autonomous post generation",
+    )
+    p_run.add_argument(
+        "--judge-threshold",
+        type=float,
+        default=82.0,
+        help="Frog Judge minimum score (0-100) required for autonomous post acceptance",
+    )
+    p_run.add_argument(
+        "--max-attempts",
+        type=int,
+        default=7,
+        help="Max autonomous regeneration attempts before returning best draft",
+    )
+    p_run.add_argument(
+        "--ensemble",
+        type=int,
+        default=1,
+        help="Generate N variants per attempt and pick the top-scoring draft (max 8)",
+    )
+    p_run.add_argument(
+        "--viral-boost",
+        action="store_true",
+        help="Increase viral-potential weighting in Frog Judge",
+    )
+
+    p_kit = sub.add_parser(
+        "kit",
+        help="All-in-one operator kit (diagnose/reply/gather/post with one command)",
+    )
+    p_kit.add_argument(
+        "--mode",
+        choices=["auto", "post", "reply", "diagnose"],
+        default="auto",
+    )
+    p_kit.add_argument("--text")
+    p_kit.add_argument("--file")
+    p_kit.add_argument("--dry-run", action="store_true")
+    p_kit.add_argument("--json", action="store_true")
+    p_kit.add_argument("--reply-handle", default="OpenClawAI")
+    p_kit.add_argument("--reply-since-id")
+    p_kit.add_argument("--log-path", default="data/replies.jsonl")
+    p_kit.add_argument("--report-path", default="data/mentions_report.json")
+    p_kit.add_argument(
+        "--gather-when-no-reply",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p_kit.add_argument(
+        "--gather-query",
+        default='openclaw OR "local ai agent" lang:en -is:retweet',
+    )
+    p_kit.add_argument("--gather-limit", type=int, default=20)
+    p_kit.add_argument("--gather-max-pages", type=int, default=1)
+    p_kit.add_argument("--gather-output", default="data/engine_data_snapshot.json")
+    p_kit.add_argument(
+        "--web-inspiration",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use internet headlines/search signals to inspire generated posts",
+    )
+    p_kit.add_argument(
+        "--web-query",
+        default="ai agents automation reliability",
+    )
+    p_kit.add_argument("--web-items", type=int, default=8)
+    p_kit.add_argument(
+        "--style",
+        choices=["auto", "contrarian", "operator", "story"],
+        default="auto",
+    )
+    p_kit.add_argument(
+        "--voice",
+        choices=["auto", "chaotic", "degen", "based", "savage", "operator", "sage", "shitposter"],
+        default="auto",
+    )
+    p_kit.add_argument(
+        "--viral-pack",
+        choices=["auto", "light", "medium", "nuclear", "alpha", "chaos", "infinite"],
+        default="",
+        help="Single-flag preset for voice/style/ensemble/judge/viral settings",
+    )
+    p_kit.add_argument("--anti-boring", action="store_true")
+    p_kit.add_argument(
+        "--sharpen",
+        action="store_true",
+        help="Apply high-signal lexicon sharpening to autonomous post generation",
+    )
+    p_kit.add_argument(
+        "--judge-threshold",
+        type=float,
+        default=82.0,
+        help="Frog Judge minimum score (0-100) required for autonomous post acceptance",
+    )
+    p_kit.add_argument(
+        "--max-attempts",
+        type=int,
+        default=7,
+        help="Max autonomous regeneration attempts before returning best draft",
+    )
+    p_kit.add_argument(
+        "--ensemble",
+        type=int,
+        default=1,
+        help="Generate N variants per attempt and pick the top-scoring draft (max 8)",
+    )
+    p_kit.add_argument(
+        "--viral-boost",
+        action="store_true",
+        help="Increase viral-potential weighting in Frog Judge",
     )
 
     p_seamless = sub.add_parser(
@@ -3627,6 +5474,20 @@ def build_parser() -> argparse.ArgumentParser:
         "restart-setup",
         help="Restart recovery: repair setup/auth after reboot without posting",
     )
+
+    p_gather = sub.add_parser(
+        "gather-data",
+        help="Collect mentions + search snapshot for autonomous decision context",
+    )
+    p_gather.add_argument("--handle", default="OpenClawAI")
+    p_gather.add_argument(
+        "--query",
+        default='openclaw OR "local ai agent" lang:en -is:retweet',
+    )
+    p_gather.add_argument("--limit", type=int, default=20)
+    p_gather.add_argument("--max-pages", type=int, default=1)
+    p_gather.add_argument("--output", default="data/engine_data_snapshot.json")
+    p_gather.add_argument("--json", action="store_true")
 
     p_browse = sub.add_parser(
         "browse-twitter",
@@ -3681,7 +5542,7 @@ def build_parser() -> argparse.ArgumentParser:
         "reply-discover-run",
         help="Proactive discovery + draft/auto-reply pipeline",
     )
-    p_discover_run.add_argument("--watchlist", default="default", help="Watchlist name from ~/.config/openclaw-twitter-helper/watchlists.json")
+    p_discover_run.add_argument("--watchlist", default="default", help="Watchlist name from ~/.config/twitter-engine/watchlists.json")
     p_discover_run.add_argument("--query", help="One-off query (overrides --watchlist)")
     p_discover_run.add_argument("--since-id", help="Override checkpoint and only include newer tweets than this ID")
     p_discover_run.add_argument("--max-tweets", type=int, default=1, help="Max tweets to fetch per query")
@@ -3724,6 +5585,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspire.add_argument("--until-id", help="Only include tweets older than this tweet ID")
     p_inspire.add_argument("--sample-size", type=int, default=12, help="Sample tweets used to derive themes")
     p_inspire.add_argument("--draft-count", type=int, default=5, help="Number of inspiration drafts")
+    p_inspire.add_argument(
+        "--web-inspiration",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Also pull internet headlines/search trends for inspiration",
+    )
+    p_inspire.add_argument("--web-query", help="Optional internet query override")
+    p_inspire.add_argument("--web-items", type=int, default=8, help="Max internet inspiration items")
     p_inspire.add_argument("--save", help="Optional file path to save JSON output")
     p_inspire.add_argument("--json", action="store_true", help="Print raw JSON output")
 
@@ -3817,6 +5686,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     ACTIVE_ACCOUNT = args.account or "default"
     os.environ["OPENCLAW_TWITTER_ACCOUNT"] = ACTIVE_ACCOUNT
+    os.environ["TWITTER_ENGINE_ACCOUNT"] = ACTIVE_ACCOUNT
 
     env_path = Path(args.env_file)
 
@@ -3827,14 +5697,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_app_settings(env_path)
         if args.command == "walkthrough":
             return cmd_walkthrough()
-        if args.command == "openclaw-status":
-            return cmd_openclaw_status(env_path)
-        if args.command == "run-twitter-helper":
-            return cmd_run_twitter_helper(env_path, args)
+        if args.command == "set-bearer-token":
+            return cmd_set_bearer_token(env_path, args)
+        if args.command == "memory":
+            return cmd_memory(args)
+        if args.command in {"engine-status", "openclaw-status"}:
+            return cmd_engine_status(env_path)
+        if args.command == "kit":
+            return cmd_kit(env_path, args)
+        if args.command in {"twitter-engine", "run-twitter-helper"}:
+            return cmd_twitter_engine(env_path, args)
         if args.command == "seamless":
             return cmd_seamless(env_path, args)
         if args.command == "restart-setup":
             return cmd_restart_setup(env_path, args)
+        if args.command == "gather-data":
+            return cmd_gather_data(env_path, args)
         if args.command == "browse-twitter":
             return cmd_browse_twitter(env_path, args)
         if args.command == "mentions":
@@ -3873,10 +5751,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_check_auth(cfg, env_path, env_values)
         if args.command == "post":
             return cmd_post(cfg, env_path, env_values, args)
-        if args.command == "openclaw-autopost":
-            return cmd_openclaw_autopost(cfg, env_path, env_values, args)
-        if args.command == "openclaw":
-            return cmd_openclaw(env_path, args)
+        if args.command in {"engine-autopost", "openclaw-autopost"}:
+            return cmd_engine_autopost(cfg, env_path, env_values, args)
+        if args.command in {"engine-check", "openclaw"}:
+            return cmd_engine_check(env_path, args)
         if args.command == "thread":
             return cmd_thread(cfg, env_path, env_values, args)
 
