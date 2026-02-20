@@ -124,6 +124,18 @@ Fetch one tweet by ID:
 python src/twitter_helper.py browse-twitter --tweet 2024835587052613989 --json
 ```
 
+Browse user timeline:
+
+```bash
+python src/twitter_helper.py browse-twitter --mode user --username OpenClawAI --limit 20 --max-pages 2
+```
+
+Incremental scan + save:
+
+```bash
+python src/twitter_helper.py browse-twitter --handle OpenClawAI --since-id 2024835587052613989 --limit 20 --max-pages 2 --save data/browse_latest.json
+```
+
 ## Integrated Reply Engine
 
 Discover:

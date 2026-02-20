@@ -440,6 +440,7 @@ def cmd_browse_twitter(env_path: Path, args: argparse.Namespace) -> int:
     env = load_env_file(env_path)
     bearer = get_read_bearer_token(env)
     limit = max(5, min(args.limit, 100))
+    max_pages = max(1, min(args.max_pages, 10))
 
     if args.tweet:
         status, body = api_get_with_token(
@@ -454,48 +455,168 @@ def cmd_browse_twitter(env_path: Path, args: argparse.Namespace) -> int:
         print(json.dumps(body, ensure_ascii=False, indent=2))
         return 0
 
-    query = args.query
-    if not query:
-        handle = args.handle.lstrip("@")
-        query = f"to:{handle} -from:{handle} -is:retweet"
+    all_data: List[Dict[str, object]] = []
+    users: Dict[str, str] = {}
+    meta: Dict[str, object] = {}
 
-    encoded_q = urllib.parse.quote(query)
-    status, body = api_get_with_token(
-        f"{API_BASE}/tweets/search/recent"
-        f"?query={encoded_q}&max_results={limit}"
-        "&expansions=author_id&tweet.fields=created_at,public_metrics,conversation_id,text"
-        "&user.fields=username,name",
-        bearer,
-    )
-    if status == 401:
-        raise TwitterHelperError(
-            "browse-twitter unauthorized (401). "
-            "Check TWITTER_BEARER_TOKEN has v2 read access, or refresh OAuth2 with `auth-login`."
+    if args.mode == "user":
+        username = args.username or args.handle
+        clean_user = username.lstrip("@")
+        u_status, u_body = api_get_with_token(
+            f"{API_BASE}/users/by/username/{clean_user}?user.fields=id,username,name",
+            bearer,
         )
-    if status >= 400:
-        raise TwitterHelperError(
-            f"browse query failed ({status}): {json.dumps(body, ensure_ascii=False)}"
-        )
+        if u_status == 401:
+            raise TwitterHelperError(
+                "browse-twitter unauthorized (401). "
+                "Check TWITTER_BEARER_TOKEN has v2 read access, or refresh OAuth2 with `auth-login`."
+            )
+        if u_status >= 400:
+            raise TwitterHelperError(
+                f"browse user lookup failed ({u_status}): {json.dumps(u_body, ensure_ascii=False)}"
+            )
+
+        user_data = u_body.get("data") if isinstance(u_body, dict) else None
+        user_id = str(user_data.get("id", "")) if isinstance(user_data, dict) else ""
+        users[user_id] = clean_user
+        if not user_id:
+            raise TwitterHelperError(f"Could not resolve user id for @{clean_user}")
+
+        next_token = None
+        pages = 0
+        while pages < max_pages:
+            params = [
+                f"max_results={limit}",
+                "tweet.fields=created_at,public_metrics,conversation_id,text",
+            ]
+            if not args.with_replies:
+                params.append("exclude=replies")
+            if args.since_id:
+                params.append(f"since_id={urllib.parse.quote(str(args.since_id))}")
+            if args.until_id:
+                params.append(f"until_id={urllib.parse.quote(str(args.until_id))}")
+            if next_token:
+                params.append(f"pagination_token={urllib.parse.quote(next_token)}")
+
+            status, body = api_get_with_token(
+                f"{API_BASE}/users/{user_id}/tweets?" + "&".join(params),
+                bearer,
+            )
+            if status >= 400:
+                raise TwitterHelperError(
+                    f"browse user tweets failed ({status}): {json.dumps(body, ensure_ascii=False)}"
+                )
+
+            data = body.get("data") if isinstance(body, dict) else None
+            if isinstance(data, list):
+                for row in data:
+                    if isinstance(row, dict):
+                        row = dict(row)
+                        row["author_id"] = user_id
+                        all_data.append(row)
+
+            meta = body.get("meta") if isinstance(body, dict) and isinstance(body.get("meta"), dict) else {}
+            next_token = str(meta.get("next_token", "")) if meta.get("next_token") else None
+            pages += 1
+            if not next_token:
+                break
+    else:
+        query = args.query
+        if not query:
+            handle = args.handle.lstrip("@")
+            query = f"to:{handle} -from:{handle} -is:retweet"
+
+        next_token = None
+        pages = 0
+        while pages < max_pages:
+            params = [
+                f"query={urllib.parse.quote(query)}",
+                f"max_results={limit}",
+                "expansions=author_id",
+                "tweet.fields=created_at,public_metrics,conversation_id,text",
+                "user.fields=username,name",
+            ]
+            if args.since_id:
+                params.append(f"since_id={urllib.parse.quote(str(args.since_id))}")
+            if args.until_id:
+                params.append(f"until_id={urllib.parse.quote(str(args.until_id))}")
+            if next_token:
+                params.append(f"next_token={urllib.parse.quote(next_token)}")
+
+            status, body = api_get_with_token(
+                f"{API_BASE}/tweets/search/recent?" + "&".join(params),
+                bearer,
+            )
+            if status == 401:
+                raise TwitterHelperError(
+                    "browse-twitter unauthorized (401). "
+                    "Check TWITTER_BEARER_TOKEN has v2 read access, or refresh OAuth2 with `auth-login`."
+                )
+            if status >= 400:
+                raise TwitterHelperError(
+                    f"browse query failed ({status}): {json.dumps(body, ensure_ascii=False)}"
+                )
+
+            includes = body.get("includes") if isinstance(body, dict) else None
+            if isinstance(includes, dict) and isinstance(includes.get("users"), list):
+                for u in includes["users"]:
+                    if isinstance(u, dict):
+                        users[str(u.get("id", ""))] = u.get("username", "unknown")
+
+            data = body.get("data") if isinstance(body, dict) else None
+            if isinstance(data, list):
+                for row in data:
+                    if isinstance(row, dict):
+                        all_data.append(row)
+
+            meta = body.get("meta") if isinstance(body, dict) and isinstance(body.get("meta"), dict) else {}
+            next_token = str(meta.get("next_token", "")) if meta.get("next_token") else None
+            pages += 1
+            if not next_token:
+                break
+
+    if args.save:
+        out = Path(args.save)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "mode": args.mode,
+            "query": args.query,
+            "handle": args.handle,
+            "username": args.username,
+            "limit": limit,
+            "max_pages": max_pages,
+            "since_id": args.since_id,
+            "until_id": args.until_id,
+            "count": len(all_data),
+            "users": users,
+            "meta": meta,
+            "data": all_data,
+        }
+        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Saved browse output -> {out}")
 
     if args.json:
-        print(json.dumps(body, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"users": users, "meta": meta, "data": all_data},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
-    users = {}
-    includes = body.get("includes") if isinstance(body, dict) else None
-    if isinstance(includes, dict) and isinstance(includes.get("users"), list):
-        for u in includes["users"]:
-            if isinstance(u, dict):
-                users[str(u.get("id", ""))] = u.get("username", "unknown")
-
-    data = body.get("data") if isinstance(body, dict) else None
-    if not isinstance(data, list) or not data:
+    if not all_data:
         print("No tweets found.")
         return 0
 
-    print(f"Query: {query}")
-    print(f"Results: {len(data)}")
-    for i, t in enumerate(data, start=1):
+    if args.mode == "user":
+        print(f"Mode: user timeline @{(args.username or args.handle).lstrip('@')}")
+    else:
+        default_query = f"to:{args.handle.lstrip('@')} -from:{args.handle.lstrip('@')} -is:retweet"
+        print(f"Mode: search")
+        print(f"Query: {args.query if args.query else default_query}")
+    print(f"Results: {len(all_data)}")
+    for i, t in enumerate(all_data, start=1):
         if not isinstance(t, dict):
             continue
         tid = str(t.get("id", ""))
@@ -504,7 +625,10 @@ def cmd_browse_twitter(env_path: Path, args: argparse.Namespace) -> int:
         text = str(t.get("text", "")).replace("\n", " ").strip()
         print(f"{i}. @{username} | {tid}")
         print(f"   {text}")
-        print(f"   https://x.com/{username}/status/{tid}")
+        if username != "unknown":
+            print(f"   https://x.com/{username}/status/{tid}")
+        else:
+            print(f"   https://x.com/i/web/status/{tid}")
     return 0
 
 
@@ -1305,12 +1429,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_browse = sub.add_parser(
         "browse-twitter",
-        help="Browse Twitter: mentions query (default), custom query, or one tweet by ID",
+        help="Browse Twitter: mentions/search/user timeline, with pagination and incremental scan",
+    )
+    p_browse.add_argument(
+        "--mode",
+        choices=["search", "user"],
+        default="search",
+        help="search (mentions/custom query) or user timeline mode",
     )
     p_browse.add_argument("--tweet", help="Fetch one tweet by tweet ID")
     p_browse.add_argument("--query", help="Custom recent-search query")
     p_browse.add_argument("--handle", default="OpenClawAI", help="Handle for default mentions query")
+    p_browse.add_argument("--username", help="Username for --mode user (defaults to --handle)")
     p_browse.add_argument("--limit", type=int, default=20, help="Number of results (5-100)")
+    p_browse.add_argument("--max-pages", type=int, default=1, help="Pagination pages to fetch (1-10)")
+    p_browse.add_argument("--since-id", help="Only return tweets newer than this tweet ID")
+    p_browse.add_argument("--until-id", help="Only return tweets older than this tweet ID")
+    p_browse.add_argument("--save", help="Optional file path to save output JSON")
+    p_browse.add_argument(
+        "--with-replies",
+        action="store_true",
+        help="In user mode, include replies in timeline results",
+    )
     p_browse.add_argument("--json", action="store_true", help="Print raw JSON response")
 
     p_reply_discover = sub.add_parser(
