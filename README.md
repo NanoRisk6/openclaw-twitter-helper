@@ -14,6 +14,26 @@ python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py post --text
 `setup` also auto-sets OAuth scopes to `tweet.read tweet.write users.read offline.access` so users do not need to choose scopes.
 `auth-login` now runs `doctor` automatically after token exchange.
 
+## One-Command Mode For Open Claw
+
+When you want Open Claw (or a subagent) to fully handle check + repair + post:
+
+```bash
+/Users/matthew/openclaw-twitter-helper/run-twitter-helper --text "Open Claw status update"
+```
+
+Equivalent direct command:
+
+```bash
+python3 /Users/matthew/openclaw-twitter-helper/src/twitter_helper.py run-twitter-helper --text "Open Claw status update"
+```
+
+This command will:
+- locate the helper + env paths,
+- run readiness checks,
+- launch OAuth browser repair if auth is broken,
+- post a unique public tweet by appending a UTC timestamp suffix.
+
 ## Twitter App Settings (What to choose)
 
 Run this to print exact values from your current env:

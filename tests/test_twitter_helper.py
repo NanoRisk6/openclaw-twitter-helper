@@ -41,6 +41,12 @@ class PostSanitizeTests(unittest.TestCase):
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["payload"]["text"], "Hello world")
 
+    def test_make_unique_public_tweet_adds_visible_timestamp_suffix(self) -> None:
+        text = twitter_helper.make_unique_public_tweet("Open Claw status update")
+        self.assertTrue(text.startswith("Open Claw status update"))
+        self.assertRegex(text, r" • \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z$")
+        self.assertNotRegex(text, r"\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]$")
+
 
 if __name__ == "__main__":
     unittest.main()

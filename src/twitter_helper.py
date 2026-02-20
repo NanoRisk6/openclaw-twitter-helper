@@ -25,6 +25,7 @@ DEFAULT_SCOPES = "tweet.read tweet.write users.read offline.access"
 OPENCLAW_SUFFIX_RE = re.compile(
     r"\s*\[openclaw-\d{8}-\d{6}-[a-z0-9]{4}\]\s*$", re.IGNORECASE
 )
+TOOL_ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
@@ -238,6 +239,23 @@ def unique_marker(prefix: str = "openclaw") -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     token = secrets.token_hex(2)
     return f"{prefix}-{stamp}-{token}"
+
+
+def make_unique_public_tweet(base_text: str) -> str:
+    base = sanitize_public_text(base_text)
+    if not base:
+        raise TwitterHelperError("No tweet text provided.")
+
+    suffix = datetime.now(timezone.utc).strftime(" • %Y-%m-%d %H:%M:%SZ")
+    allowed = MAX_TWEET_LEN - len(suffix)
+    if allowed < 1:
+        raise TwitterHelperError("Tweet too long to append uniqueness suffix.")
+    if len(base) > allowed:
+        if allowed <= 3:
+            base = base[:allowed]
+        else:
+            base = base[: allowed - 3].rstrip() + "..."
+    return base + suffix
 
 
 def ensure_auth(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> Config:
@@ -556,6 +574,60 @@ def cmd_openclaw(env_path: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run_twitter_helper(env_path: Path, args: argparse.Namespace) -> int:
+    helper_path = TOOL_ROOT / "src" / "twitter_helper.py"
+    wrapper_path = TOOL_ROOT / "run-twitter-helper"
+    print("Run Twitter Helper")
+    print(f"Workspace: {TOOL_ROOT}")
+    print(f"Helper: {helper_path}")
+    print(f"Wrapper: {wrapper_path}")
+    print(f"Env file: {env_path.resolve()}")
+
+    env = load_env_file(env_path)
+    has_client_id = bool(get_env_value(env, "TWITTER_CLIENT_ID"))
+    has_client_secret = bool(get_env_value(env, "TWITTER_CLIENT_SECRET"))
+
+    if not has_client_id or not has_client_secret:
+        print("Twitter app credentials missing. Launching setup...")
+        setup_args = argparse.Namespace(reset=False, skip_auth_login=True)
+        rc = cmd_setup(env_path, setup_args)
+        if rc != 0:
+            return rc
+
+    print("Checking posting readiness...")
+    doctor_rc = cmd_doctor(env_path)
+    if doctor_rc != 0:
+        if not sys.stdin.isatty():
+            raise TwitterHelperError(
+                "Auth repair requires interactive OAuth callback input. "
+                "Run `auth-login` once in an interactive terminal, then rerun `run-twitter-helper`."
+            )
+        print("Attempting automatic OAuth repair via browser login...")
+        auth_args = argparse.Namespace(
+            no_open=False,
+            skip_doctor=False,
+            auto_post=False,
+            auto_post_text=None,
+        )
+        doctor_rc = cmd_auth_login(env_path, auth_args)
+        if doctor_rc != 0:
+            return doctor_rc
+
+    if args.no_post:
+        print("Readiness is healthy. Skipping post (--no-post).")
+        return 0
+
+    cfg, env_values = resolve_config(env_path)
+    base_text = args.text
+    if args.file:
+        base_text = Path(args.file).read_text(encoding="utf-8").strip()
+    if not base_text:
+        base_text = "Open Claw is online and posting."
+    unique_text = make_unique_public_tweet(base_text)
+    post_args = argparse.Namespace(text=unique_text, file=None, dry_run=args.dry_run)
+    return cmd_openclaw_autopost(cfg, env_path, env_values, post_args)
+
+
 def post_with_retry(
     cfg: Config,
     env_path: Path,
@@ -649,7 +721,12 @@ def cmd_auth_login(env_path: Path, args: argparse.Namespace) -> int:
         print("Open this URL in your browser:")
         print(auth_url)
 
-    callback_input = input("\nPaste callback URL (or code): ").strip()
+    try:
+        callback_input = input("\nPaste callback URL (or code): ").strip()
+    except EOFError as exc:
+        raise TwitterHelperError(
+            "No callback input detected. Re-run `auth-login` in an interactive terminal."
+        ) from exc
     if not callback_input:
         raise TwitterHelperError("No callback input provided.")
 
@@ -912,6 +989,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_thread = sub.add_parser("thread", help="Post a thread from file")
     p_thread.add_argument("--file", required=True, help="Path to thread text file")
 
+    p_run = sub.add_parser(
+        "run-twitter-helper",
+        help="One-command Open Claw flow: check, repair auth if needed, then post unique tweet",
+    )
+    p_run.add_argument("--text", help="Base tweet text")
+    p_run.add_argument("--file", help="Path to base text file")
+    p_run.add_argument(
+        "--no-post",
+        action="store_true",
+        help="Only verify/repair readiness; do not post",
+    )
+    p_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print final tweet text instead of posting",
+    )
+
     return parser
 
 
@@ -930,6 +1024,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_walkthrough()
         if args.command == "openclaw-status":
             return cmd_openclaw_status(env_path)
+        if args.command == "run-twitter-helper":
+            return cmd_run_twitter_helper(env_path, args)
         if args.command == "auth-login":
             return cmd_auth_login(env_path, args)
         if args.command == "doctor":
