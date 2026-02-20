@@ -583,8 +583,10 @@ def cmd_setup(env_path: Path, args: argparse.Namespace) -> int:
         current = "" if args.reset else env.get(key, "")
         env[key] = prompt_value(key, current=current)
 
+    print("\nOptional: add App-Only bearer token for read/scan reply workflows.")
+    print("Press Enter to skip this field.\n")
     env["TWITTER_BEARER_TOKEN"] = prompt_value(
-        "TWITTER_BEARER_TOKEN (App-Only, optional but recommended for reply scan workflows)",
+        "TWITTER_BEARER_TOKEN",
         current="" if args.reset else env.get("TWITTER_BEARER_TOKEN", ""),
         allow_empty=True,
     )
