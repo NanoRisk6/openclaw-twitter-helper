@@ -44,9 +44,20 @@ ACTIVE_ACCOUNT = "default"
 USER_ID_CACHE_TTL_SECONDS = 86400
 APPROVAL_DIR = TOKEN_CONFIG_DIR / "approval_queue"
 APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
+RECENT_REPLIES_CACHE = TOKEN_CONFIG_DIR / "recent_replies.jsonl"
+PERSONA_FILE = TOKEN_CONFIG_DIR / "persona" / "openclaw.md"
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_SIZE_MB = 5
 MAX_IMAGES = 5
+MAX_REPLY_DRAFT_LEN = 240
+GENERIC_REPLY_OPENERS = (
+    "great point",
+    "totally agree",
+    "interesting",
+    "love this",
+    "well said",
+    "this is great",
+)
 
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
@@ -1270,6 +1281,161 @@ def save_for_approval(item: Dict[str, object]) -> str:
     return qid
 
 
+def load_persona_text() -> str:
+    if PERSONA_FILE.exists():
+        text = PERSONA_FILE.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    return (
+        "You are OpenClaw: helpful, practical, and local-first. "
+        "Prefer direct, concrete replies over generic praise."
+    )
+
+
+def _reply_prefix_key(text: str) -> str:
+    return sanitize_public_text(text).lower()[:80]
+
+
+def load_recent_reply_prefixes(hours: int = 24) -> Set[str]:
+    cutoff = time.time() - max(1, hours) * 3600
+    out: Set[str] = set()
+    if not RECENT_REPLIES_CACHE.exists():
+        return out
+    for line in RECENT_REPLIES_CACHE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        ts_raw = str(row.get("ts", "")).strip()
+        text_raw = str(row.get("text", "")).strip()
+        if not ts_raw or not text_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_raw).timestamp()
+        except ValueError:
+            continue
+        if ts >= cutoff:
+            out.add(_reply_prefix_key(text_raw))
+    return out
+
+
+def record_recent_reply(text: str, target_id: str) -> None:
+    RECENT_REPLIES_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "text": sanitize_public_text(text),
+        "target_id": str(target_id).strip(),
+        "account": ACTIVE_ACCOUNT,
+    }
+    with RECENT_REPLIES_CACHE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _extract_hook_terms(tweet_text: str, context_text: str, limit: int = 10) -> List[str]:
+    terms: List[str] = []
+    seen: Set[str] = set()
+    for token in WORD_RE.findall(f"{tweet_text} {context_text}"):
+        low = token.lower()
+        if low in STOPWORDS or len(low) < 4 or low in seen:
+            continue
+        seen.add(low)
+        terms.append(low)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+def generate_unique_applicable_reply(
+    *,
+    author: str,
+    tweet_text: str,
+    context_text: str,
+    score: int,
+    generate_drafts_fn: Any,
+    persona_text: str,
+    recent_hours: int = 24,
+) -> Dict[str, object]:
+    draft_input = tweet_text if not context_text else f"{tweet_text}\n\nThread context:\n{context_text}"
+    if persona_text.strip():
+        draft_input = f"Persona guidance:\n{persona_text.strip()}\n\n{draft_input}"
+    drafts = generate_drafts_fn(author=author, text=draft_input, draft_count=6) or []
+    if not isinstance(drafts, list):
+        drafts = []
+
+    recent_prefixes = load_recent_reply_prefixes(hours=recent_hours)
+    hook_terms = _extract_hook_terms(tweet_text=tweet_text, context_text=context_text)
+
+    best_text = ""
+    best_conf = 30
+    best_reason = "no_candidate"
+    best_hook = ""
+    best_unique = False
+
+    for raw in drafts:
+        if not isinstance(raw, str):
+            continue
+        candidate = sanitize_public_text(raw).strip()
+        if not candidate:
+            continue
+        if len(candidate) > MAX_REPLY_DRAFT_LEN:
+            continue
+        low = candidate.lower()
+        if any(low.startswith(prefix) for prefix in GENERIC_REPLY_OPENERS):
+            continue
+        prefix_key = _reply_prefix_key(candidate)
+        if prefix_key in recent_prefixes:
+            continue
+
+        matched = ""
+        for term in hook_terms:
+            if term in low:
+                matched = term
+                break
+        if not matched and hook_terms:
+            continue
+
+        conf = max(45, min(97, 55 + int(score / 6)))
+        if matched:
+            conf += 12
+        if persona_text:
+            conf += 3
+        conf = max(0, min(99, conf))
+
+        best_text = candidate
+        best_conf = conf
+        best_reason = (
+            "references specific tweet/thread details and passes 24h uniqueness check"
+        )
+        best_hook = matched or "n/a"
+        best_unique = True
+        break
+
+    if not best_text:
+        fallback = sanitize_public_text(str(drafts[0]).strip()) if drafts else ""
+        best_text = fallback or "Thanks for sharing this."
+        if len(best_text) > MAX_REPLY_DRAFT_LEN:
+            best_text = best_text[: MAX_REPLY_DRAFT_LEN - 3].rstrip() + "..."
+        best_conf = max(25, min(65, 40 + int(score / 10)))
+        if _reply_prefix_key(best_text) in recent_prefixes:
+            best_conf = max(20, best_conf - 25)
+            best_reason = "similar to recent replies"
+        else:
+            best_reason = "fallback draft (limited specificity)"
+
+    return {
+        "reply_text": best_text,
+        "confidence": best_conf,
+        "reason": best_reason,
+        "hook_used": best_hook,
+        "unique_passed": best_unique,
+    }
+
+
 def list_approval_queue() -> List[Dict[str, object]]:
     out: List[Dict[str, object]] = []
     for p in sorted(APPROVAL_DIR.glob("q_*.json")):
@@ -1478,6 +1644,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
     total_candidates = 0
     total_posted = 0
     per_query_results: List[Dict[str, object]] = []
+    persona_text = load_persona_text()
 
     for query in queries:
         effective_since = args.since_id or load_query_since_id(query, ACTIVE_ACCOUNT)
@@ -1513,10 +1680,20 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                 [str(x.get("text", "")).strip() for x in context_chain[:-1] if x.get("text")]
             ).strip()
 
-            draft_input = text if not context_text else f"{text}\n\nThread context:\n{context_text}"
-            drafts = generate_reply_drafts(author=author, text=draft_input, draft_count=3)
-            draft = drafts[0] if drafts else ""
-            confidence = max(40, min(95, 50 + int(score / 8)))
+            reply_eval = generate_unique_applicable_reply(
+                author=author,
+                tweet_text=text,
+                context_text=context_text,
+                score=score,
+                generate_drafts_fn=generate_reply_drafts,
+                persona_text=persona_text,
+                recent_hours=24,
+            )
+            draft = str(reply_eval.get("reply_text", "")).strip()
+            confidence = int(reply_eval.get("confidence", 0))
+            reason = str(reply_eval.get("reason", "")).strip()
+            hook_used = str(reply_eval.get("hook_used", "")).strip()
+            unique_passed = bool(reply_eval.get("unique_passed", False))
 
             item = {
                 "tweet_id": tid,
@@ -1526,6 +1703,9 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                 "tweet_text": text,
                 "thread_context": context_text,
                 "draft_reply": draft,
+                "reason": reason,
+                "hook_used": hook_used,
+                "unique_passed": unique_passed,
                 "action": "draft",
             }
 
@@ -1539,12 +1719,14 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                         "text": draft,
                         "in_reply_to": tid,
                         "confidence": confidence,
-                        "reason": "discover_run_threshold",
-                        "source": "reply-discover-run",
+                        "reason": reason or "discover_run_threshold",
+                        "hook_used": hook_used,
+                        "source": "unique-apply",
                         "query": query,
                         "tweet_text": text,
                     }
                 )
+                record_recent_reply(draft, tid)
                 item["action"] = "queued"
                 item["queue_id"] = f"q_{qid}"
             elif post_enabled and cfg is not None and draft and confidence >= args.min_confidence:
@@ -1567,6 +1749,7 @@ def cmd_reply_discover_run(env_path: Path, args: argparse.Namespace) -> int:
                         item["action"] = "posted"
                         item["posted_tweet_id"] = posted_id
                         item["posted_url"] = posted_url
+                        record_recent_reply(draft, tid)
                         total_posted += 1
             query_rows.append(item)
 

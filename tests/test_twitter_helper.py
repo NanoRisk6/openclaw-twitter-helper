@@ -788,6 +788,61 @@ class PostSanitizeTests(unittest.TestCase):
         self.assertNotEqual(calls[0], calls[1])
         self.assertRegex(calls[1], r" • r\d{6}-[0-9a-f]{2}$")
 
+    def test_generate_unique_applicable_reply_prefers_specific_and_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_cache = twitter_helper.RECENT_REPLIES_CACHE
+            twitter_helper.RECENT_REPLIES_CACHE = Path(td) / "recent_replies.jsonl"
+            try:
+                def fake_generate(author, text, draft_count):
+                    return [
+                        "Great point - thanks for sharing.",
+                        "Your vendor lock-in callout is exactly why local-first tooling wins.",
+                    ]
+
+                result = twitter_helper.generate_unique_applicable_reply(
+                    author="alice",
+                    tweet_text="Vendor lock-in is the core issue here.",
+                    context_text="How do teams avoid cloud lock-in over time?",
+                    score=40,
+                    generate_drafts_fn=fake_generate,
+                    persona_text="open-source, local-first",
+                )
+            finally:
+                twitter_helper.RECENT_REPLIES_CACHE = original_cache
+
+        self.assertIn("vendor lock-in", result["reply_text"].lower())
+        self.assertTrue(result["unique_passed"])
+        self.assertGreaterEqual(result["confidence"], 70)
+
+    def test_generate_unique_applicable_reply_penalizes_recent_prefix_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            original_cache = twitter_helper.RECENT_REPLIES_CACHE
+            twitter_helper.RECENT_REPLIES_CACHE = Path(td) / "recent_replies.jsonl"
+            try:
+                twitter_helper.record_recent_reply(
+                    "Your vendor lock-in callout is exactly why local-first tooling wins.",
+                    "111",
+                )
+
+                def fake_generate(author, text, draft_count):
+                    return [
+                        "Your vendor lock-in callout is exactly why local-first tooling wins.",
+                    ]
+
+                result = twitter_helper.generate_unique_applicable_reply(
+                    author="alice",
+                    tweet_text="Vendor lock-in is the core issue here.",
+                    context_text="How do teams avoid cloud lock-in over time?",
+                    score=40,
+                    generate_drafts_fn=fake_generate,
+                    persona_text="open-source, local-first",
+                )
+            finally:
+                twitter_helper.RECENT_REPLIES_CACHE = original_cache
+
+        self.assertFalse(result["unique_passed"])
+        self.assertLess(result["confidence"], 60)
+
 
 if __name__ == "__main__":
     unittest.main()

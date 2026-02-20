@@ -216,6 +216,11 @@ python src/twitter_helper.py reply-approve --list
 python src/twitter_helper.py reply-approve --approve q_ab12cd34 q_ef56gh78
 ```
 
+Unique applicable replies:
+- `reply-discover-run` now filters for specificity + 24h phrasing uniqueness before queue/post.
+- Recent reply prefixes are tracked in `~/.config/openclaw-twitter-helper/recent_replies.jsonl`.
+- Optional persona file: `~/.config/openclaw-twitter-helper/persona/openclaw.md`.
+
 ## Integrated Reply Engine
 
 Discover:
