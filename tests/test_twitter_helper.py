@@ -64,7 +64,7 @@ class PostSanitizeTests(unittest.TestCase):
         args = type(
             "Args",
             (),
-            {"text": "Thanks!", "file": None, "in_reply_to": "2024820748980748765"},
+            {"text": "Thanks!", "file": None, "in_reply_to": None},
         )()
 
         original_post_with_retry = twitter_helper.post_with_retry
@@ -75,7 +75,41 @@ class PostSanitizeTests(unittest.TestCase):
             twitter_helper.post_with_retry = original_post_with_retry
 
         self.assertEqual(rc, 0)
-        self.assertEqual(captured["reply_to_id"], "2024820748980748765")
+        self.assertIsNone(captured["reply_to_id"])
+
+    def test_cmd_post_in_reply_to_preflight_not_visible(self) -> None:
+        cfg = twitter_helper.Config(
+            client_id="cid",
+            client_secret="secret",
+            access_token="token",
+            refresh_token="refresh",
+        )
+        args = type(
+            "Args",
+            (),
+            {"text": "Thanks!", "file": None, "in_reply_to": "2024832368729463259"},
+        )()
+
+        original_ensure_auth = twitter_helper.ensure_auth
+        original_fetch_tweet = twitter_helper.fetch_tweet
+        twitter_helper.ensure_auth = lambda cfg, env_path, env_values: cfg
+        twitter_helper.fetch_tweet = lambda cfg, tid: (
+            200,
+            {
+                "errors": [
+                    {
+                        "detail": "Could not find tweet",
+                        "resource_id": tid,
+                    }
+                ]
+            },
+        )
+        try:
+            with self.assertRaises(twitter_helper.TwitterHelperError):
+                twitter_helper.cmd_post(cfg, Path("."), {}, args)
+        finally:
+            twitter_helper.ensure_auth = original_ensure_auth
+            twitter_helper.fetch_tweet = original_fetch_tweet
 
 
 if __name__ == "__main__":

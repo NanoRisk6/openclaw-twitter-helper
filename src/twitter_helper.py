@@ -193,6 +193,14 @@ def me(cfg: Config) -> Tuple[int, Dict[str, object]]:
     )
 
 
+def fetch_tweet(cfg: Config, tweet_id: str) -> Tuple[int, Dict[str, object]]:
+    return http_json(
+        "GET",
+        f"{API_BASE}/tweets/{tweet_id}?tweet.fields=author_id,created_at",
+        {"Authorization": f"Bearer {cfg.access_token}"},
+    )
+
+
 def post_tweet(
     cfg: Config,
     text: str,
@@ -1025,6 +1033,20 @@ def cmd_post(
 
     validate_tweet_len(text)
     print(f"Posting tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
+
+    if args.in_reply_to:
+        fresh = ensure_auth(cfg, env_path, env_values)
+        check_status, check_body = fetch_tweet(fresh, args.in_reply_to)
+        if check_status >= 400:
+            raise TwitterHelperError(
+                "Reply target could not be loaded "
+                f"({check_status}): {json.dumps(check_body, ensure_ascii=False)}"
+            )
+        if isinstance(check_body, dict) and check_body.get("errors"):
+            raise TwitterHelperError(
+                "Reply target is not visible/deleted for this account: "
+                f"{json.dumps(check_body.get('errors'), ensure_ascii=False)}"
+            )
 
     _, (status, body) = post_with_retry(
         cfg,
