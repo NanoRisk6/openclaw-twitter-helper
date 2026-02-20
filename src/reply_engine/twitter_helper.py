@@ -23,6 +23,8 @@ except Exception:  # optional dependency fallback
 TWEET_ID_RE = re.compile(r"(?:status/)?(\d{10,30})")
 CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+APPROVAL_DIR = CONFIG_DIR / "approval_queue"
+APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def extract_tweet_id(tweet: str) -> str:
@@ -79,6 +81,11 @@ def _account_name() -> str:
 def _last_mention_path(account: Optional[str] = None) -> Path:
     acct = account or _account_name()
     return CONFIG_DIR / f"last_mention_id_{acct}.txt"
+
+
+def _replied_log_path(account: Optional[str] = None) -> Path:
+    acct = account or _account_name()
+    return CONFIG_DIR / f"replied_to_{acct}.jsonl"
 
 
 def load_last_mention_id(account: Optional[str] = None) -> Optional[str]:
@@ -270,6 +277,128 @@ def log_reply(log_path: Path, row: Dict[str, Any]) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+
+def has_replied_to(tweet_id: str, account: Optional[str] = None) -> bool:
+    tid = str(tweet_id).strip()
+    if not tid:
+        return False
+    path = _replied_log_path(account)
+    if not path.exists():
+        return False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if str(row.get("tweet_id", "")).strip() == tid:
+            return True
+    return False
+
+
+def record_replied(tweet_id: str, reply_id: str, source: str, account: Optional[str] = None) -> None:
+    tid = str(tweet_id).strip()
+    rid = str(reply_id).strip()
+    if not tid or not rid:
+        return
+    path = _replied_log_path(account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": datetime.now().isoformat(),
+        "tweet_id": tid,
+        "reply_id": rid,
+        "source": source,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+
+def _queue_path(qid: str) -> Path:
+    return APPROVAL_DIR / f"q_{qid}.json"
+
+
+def queue_reply_candidate(item: Dict[str, Any]) -> str:
+    qid = str(int(time.time() * 1000))[-8:]
+    payload = dict(item)
+    payload["id"] = qid
+    payload["queued_at"] = datetime.now().isoformat()
+    _queue_path(qid).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return qid
+
+
+def list_approval_queue() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for p in sorted(APPROVAL_DIR.glob("q_*.json")):
+        try:
+            row = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            row["_path"] = str(p)
+            out.append(row)
+    return out
+
+
+def approval_queue_target_ids() -> Set[str]:
+    out: Set[str] = set()
+    for row in list_approval_queue():
+        tid = str(row.get("tweet_id", "") or row.get("in_reply_to", "")).strip()
+        if tid:
+            out.add(tid)
+    return out
+
+
+def score_discovery_candidate(item: Dict[str, Any]) -> int:
+    metrics = item.get("metrics") if isinstance(item, dict) else None
+    if not isinstance(metrics, dict):
+        return 0
+    likes = int(metrics.get("like_count", 0) or 0)
+    reposts = int(metrics.get("retweet_count", 0) or 0)
+    replies = int(metrics.get("reply_count", 0) or 0)
+    quotes = int(metrics.get("quote_count", 0) or 0)
+    return likes + (2 * reposts) + (3 * replies) + (2 * quotes)
+
+
+def fetch_discovery_search(
+    client: Any,
+    query: str,
+    limit: int = 20,
+    since_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    max_results = max(10, min(limit, 100))
+    res = client.search_recent_tweets(
+        query=query,
+        max_results=max_results,
+        since_id=since_id,
+        expansions=["author_id"],
+        tweet_fields=["created_at", "public_metrics", "text", "conversation_id"],
+        user_fields=["username", "name"],
+    )
+    if not res or not getattr(res, "data", None):
+        return []
+    users = {u.id: u for u in (res.includes.get("users", []) if res.includes else [])}
+    out: List[Dict[str, Any]] = []
+    for t in res.data[:limit]:
+        author = users.get(t.author_id)
+        author_username = getattr(author, "username", "unknown")
+        out.append(
+            {
+                "tweet_id": str(t.id),
+                "author": author_username,
+                "text": t.text,
+                "created_at": str(getattr(t, "created_at", "")),
+                "metrics": getattr(t, "public_metrics", {}) or {},
+                "conversation_id": str(getattr(t, "conversation_id", "")),
+                "url": f"https://x.com/{author_username}/status/{t.id}",
+                "score": score_discovery_candidate(
+                    {"metrics": getattr(t, "public_metrics", {}) or {}}
+                ),
+            }
+        )
+    return out
 
 
 def _load_logged_tweet_ids(log_path: Path) -> Set[str]:
@@ -472,6 +601,11 @@ def run_twitter_helper(
     if dry_run:
         return result
 
+    if has_replied_to(tweet_id):
+        result["dry_run"] = True
+        result["status"] = "skipped_already_replied"
+        return result
+
     auth_username = get_authenticated_username(client)
     reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
     verify = verify_reply_visible(
@@ -490,6 +624,7 @@ def run_twitter_helper(
         "author": ctx["author"],
     }
     log_reply(Path(log_path), row)
+    record_replied(tweet_id=tweet_id, reply_id=reply_id, source="twitter-helper")
 
     result["reply_id"] = reply_id
     result["reply_url"] = reply_url
@@ -505,6 +640,8 @@ def run_mentions_workflow(
     pick: int = 1,
     post: bool = False,
     max_posts: int = 3,
+    approval_queue: bool = False,
+    min_confidence: int = 70,
     log_path: str = "data/replies.jsonl",
     report_path: str = "data/mentions_report.json",
 ) -> Dict[str, Any]:
@@ -529,6 +666,7 @@ def run_mentions_workflow(
 
     results: List[Dict[str, Any]] = []
     posted = 0
+    queued = 0
     pick_idx = max(1, pick) - 1
     max_seen_id: Optional[str] = None
     for item in mentions:
@@ -563,8 +701,30 @@ def run_mentions_workflow(
             row["status"] = "skipped_already_logged"
             results.append(row)
             continue
+        if has_replied_to(tweet_id):
+            row["status"] = "skipped_already_replied"
+            results.append(row)
+            continue
 
-        if post and posted < max_posts:
+        confidence = max(45, min(95, 50 + int(score_discovery_candidate(item) / 8)))
+        row["confidence"] = confidence
+        if approval_queue and confidence >= min_confidence:
+            qid = queue_reply_candidate(
+                {
+                    "source": "mentions_workflow",
+                    "tweet_id": tweet_id,
+                    "in_reply_to": tweet_id,
+                    "author": item["author"],
+                    "tweet_url": item["url"],
+                    "tweet_text": item["text"],
+                    "text": chosen,
+                    "confidence": confidence,
+                }
+            )
+            row["status"] = "queued"
+            row["queue_id"] = f"q_{qid}"
+            queued += 1
+        elif post and posted < max_posts:
             reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
             verify = verify_reply_visible(
                 client=client,
@@ -587,6 +747,7 @@ def run_mentions_workflow(
                     "mode": "mentions_workflow",
                 },
             )
+            record_replied(tweet_id=tweet_id, reply_id=reply_id, source="mentions_workflow")
             posted += 1
 
         results.append(row)
@@ -609,6 +770,7 @@ def run_mentions_workflow(
         "max_posts": max_posts,
         "fetched_mentions": len(mentions),
         "posted_replies": posted,
+        "queued_replies": queued,
         "results": results,
         "timestamp": datetime.now().isoformat(),
     }
@@ -617,3 +779,233 @@ def run_mentions_workflow(
     report["report_path"] = str(report_file)
     report["log_path"] = str(log_file)
     return report
+
+
+def run_discovery_workflow(
+    query: str,
+    limit: int = 20,
+    since_id: Optional[str] = None,
+    draft_count: int = 5,
+    pick: int = 1,
+    post: bool = False,
+    approval_queue: bool = False,
+    min_score: int = 20,
+    min_confidence: int = 70,
+    max_posts: int = 3,
+    log_path: str = "data/replies.jsonl",
+    report_path: str = "data/discovery_report.json",
+) -> Dict[str, Any]:
+    log_file = Path(log_path)
+    report_file = Path(report_path)
+    client = build_client(require_write=post)
+    rows = fetch_discovery_search(client=client, query=query, limit=limit, since_id=since_id)
+    logged_ids = _load_logged_tweet_ids(log_file)
+    queued_ids = approval_queue_target_ids()
+    auth_username = get_authenticated_username(client)
+    posted = 0
+    queued = 0
+    results: List[Dict[str, Any]] = []
+    pick_idx = max(1, pick) - 1
+
+    for item in rows:
+        tweet_id = item["tweet_id"]
+        score = int(item.get("score", 0))
+        row: Dict[str, Any] = {
+            "tweet_id": tweet_id,
+            "tweet_url": item["url"],
+            "author": item["author"],
+            "tweet_text": item["text"],
+            "score": score,
+            "status": "drafted",
+        }
+        if score < min_score:
+            row["status"] = "skipped_low_score"
+            results.append(row)
+            continue
+        if tweet_id in logged_ids:
+            row["status"] = "skipped_already_logged"
+            results.append(row)
+            continue
+        if has_replied_to(tweet_id):
+            row["status"] = "skipped_already_replied"
+            results.append(row)
+            continue
+        if tweet_id in queued_ids:
+            row["status"] = "skipped_already_queued"
+            results.append(row)
+            continue
+
+        context = get_full_conversation(client=client, tweet_id=tweet_id)
+        context_lines = [x.get("text", "").strip() for x in context.get("parents", []) if x.get("text")]
+        context_text = "\n".join(context_lines[-5:]).strip()
+        drafts = generate_reply_drafts(
+            author=item["author"],
+            text=f"{item['text']}\n\nThread context:\n{context_text}" if context_text else item["text"],
+            draft_count=max(1, draft_count),
+        )
+        chosen_idx = min(pick_idx, len(drafts) - 1)
+        chosen = drafts[chosen_idx]
+        confidence = max(45, min(95, 50 + int(score / 8)))
+        row["drafts"] = drafts
+        row["picked_index"] = chosen_idx + 1
+        row["picked_text"] = chosen
+        row["confidence"] = confidence
+
+        if confidence < min_confidence:
+            row["status"] = "skipped_low_confidence"
+            results.append(row)
+            continue
+
+        if approval_queue:
+            qid = queue_reply_candidate(
+                {
+                    "source": "discovery_workflow",
+                    "tweet_id": tweet_id,
+                    "in_reply_to": tweet_id,
+                    "author": item["author"],
+                    "tweet_url": item["url"],
+                    "tweet_text": item["text"],
+                    "text": chosen,
+                    "confidence": confidence,
+                    "score": score,
+                    "query": query,
+                }
+            )
+            row["status"] = "queued"
+            row["queue_id"] = f"q_{qid}"
+            queued += 1
+            queued_ids.add(tweet_id)
+            results.append(row)
+            continue
+
+        if post and posted < max_posts:
+            reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
+            verify = verify_reply_visible(
+                client=client,
+                reply_id=reply_id,
+                expected_username=auth_username,
+            )
+            reply_url = verify["url"]
+            row["status"] = "posted"
+            row["reply_id"] = reply_id
+            row["reply_url"] = reply_url
+            log_reply(
+                log_file,
+                {
+                    "tweet_id": tweet_id,
+                    "reply_id": reply_id,
+                    "reply_url": reply_url,
+                    "text": chosen,
+                    "timestamp": datetime.now().isoformat(),
+                    "author": item["author"],
+                    "mode": "discovery_workflow",
+                    "query": query,
+                },
+            )
+            record_replied(tweet_id=tweet_id, reply_id=reply_id, source="discovery_workflow")
+            posted += 1
+        results.append(row)
+
+    report = {
+        "query": query,
+        "limit": limit,
+        "since_id": since_id,
+        "draft_count": draft_count,
+        "pick": pick,
+        "post": post,
+        "approval_queue": approval_queue,
+        "min_score": min_score,
+        "min_confidence": min_confidence,
+        "max_posts": max_posts,
+        "fetched_tweets": len(rows),
+        "posted_replies": posted,
+        "queued_replies": queued,
+        "results": results,
+        "timestamp": datetime.now().isoformat(),
+    }
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report["report_path"] = str(report_file)
+    report["log_path"] = str(log_file)
+    return report
+
+
+def approve_queue(
+    ids: List[str],
+    dry_run: bool = False,
+    max_posts: Optional[int] = None,
+    log_path: str = "data/replies.jsonl",
+) -> Dict[str, Any]:
+    selected = set()
+    for raw in ids:
+        x = str(raw).strip()
+        if x.startswith("q_"):
+            x = x[2:]
+        if x:
+            selected.add(x)
+
+    queue = list_approval_queue()
+    client: Optional[Any] = None
+    auth_username: Optional[str] = None
+    posted = 0
+    skipped = 0
+    out_rows: List[Dict[str, Any]] = []
+    log_file = Path(log_path)
+
+    for row in queue:
+        qid = str(row.get("id", "")).strip()
+        if not qid or (selected and qid not in selected):
+            continue
+        tweet_id = str(row.get("in_reply_to", "") or row.get("tweet_id", "")).strip()
+        text = str(row.get("text", "")).strip()
+        path = Path(str(row.get("_path", "")))
+        res: Dict[str, Any] = {"id": f"q_{qid}", "tweet_id": tweet_id, "status": "pending"}
+        if not tweet_id or not text:
+            res["status"] = "skipped_invalid"
+            skipped += 1
+            out_rows.append(res)
+            continue
+        if has_replied_to(tweet_id):
+            res["status"] = "skipped_already_replied"
+            skipped += 1
+            if path.exists():
+                path.unlink()
+            out_rows.append(res)
+            continue
+        if dry_run:
+            res["status"] = "dry_run"
+            out_rows.append(res)
+            continue
+        if max_posts is not None and posted >= max_posts:
+            res["status"] = "skipped_max_posts"
+            skipped += 1
+            out_rows.append(res)
+            continue
+        if client is None:
+            client = build_client(require_write=True)
+            auth_username = get_authenticated_username(client)
+        reply_id = post_reply(client=client, tweet_id=tweet_id, text=text)
+        verify = verify_reply_visible(client=client, reply_id=reply_id, expected_username=auth_username)
+        reply_url = verify["url"]
+        log_reply(
+            log_file,
+            {
+                "tweet_id": tweet_id,
+                "reply_id": reply_id,
+                "reply_url": reply_url,
+                "text": text,
+                "timestamp": datetime.now().isoformat(),
+                "author": row.get("author", ""),
+                "mode": "approval_queue",
+            },
+        )
+        record_replied(tweet_id=tweet_id, reply_id=reply_id, source="approval_queue")
+        if path.exists():
+            path.unlink()
+        posted += 1
+        res["status"] = "posted"
+        res["reply_id"] = reply_id
+        res["reply_url"] = reply_url
+        out_rows.append(res)
+
+    return {"requested": len(selected) if selected else len(out_rows), "posted": posted, "skipped": skipped, "results": out_rows}

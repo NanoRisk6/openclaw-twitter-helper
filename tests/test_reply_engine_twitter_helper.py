@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import unittest
 from pathlib import Path
@@ -214,6 +215,75 @@ class VerifyReplyVisibleTests(unittest.TestCase):
             finally:
                 reply_helper.CONFIG_DIR = original_config
         self.assertEqual(got, "12345")
+
+    def test_replied_log_roundtrip(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            original_config = reply_helper.CONFIG_DIR
+            try:
+                reply_helper.CONFIG_DIR = Path(td)
+                reply_helper.record_replied("123", "555", "unit")
+                self.assertTrue(reply_helper.has_replied_to("123"))
+                self.assertFalse(reply_helper.has_replied_to("999"))
+            finally:
+                reply_helper.CONFIG_DIR = original_config
+
+    def test_score_discovery_candidate(self) -> None:
+        score = reply_helper.score_discovery_candidate(
+            {"metrics": {"like_count": 10, "retweet_count": 2, "reply_count": 3, "quote_count": 1}}
+        )
+        self.assertEqual(score, 25)
+
+    def test_run_discovery_workflow_skips_already_replied(self) -> None:
+        class Client:
+            pass
+
+        original_build_client = reply_helper.build_client
+        original_fetch_discovery = reply_helper.fetch_discovery_search
+        original_generate = reply_helper.generate_reply_drafts
+        original_has_replied = reply_helper.has_replied_to
+        original_get_auth_user = reply_helper.get_authenticated_username
+        original_post_reply = reply_helper.post_reply
+        original_verify = reply_helper.verify_reply_visible
+        try:
+            reply_helper.build_client = lambda require_write=False: Client()
+            reply_helper.fetch_discovery_search = lambda **kwargs: [
+                {
+                    "tweet_id": "123",
+                    "author": "alice",
+                    "text": "openclaw local ai",
+                    "url": "https://x.com/alice/status/123",
+                    "metrics": {"like_count": 10, "retweet_count": 0, "reply_count": 0, "quote_count": 0},
+                    "score": 30,
+                }
+            ]
+            reply_helper.generate_reply_drafts = lambda author, text, draft_count: ["reply one"]
+            reply_helper.has_replied_to = lambda tweet_id, account=None: True
+            reply_helper.get_authenticated_username = lambda client: "OpenClawAI"
+            reply_helper.post_reply = lambda client, tweet_id, text: "r1"
+            reply_helper.verify_reply_visible = lambda client, reply_id, expected_username=None, attempts=3, delay_seconds=1.0: {
+                "url": "https://x.com/OpenClawAI/status/r1"
+            }
+
+            result = reply_helper.run_discovery_workflow(
+                query="openclaw",
+                limit=5,
+                post=True,
+                max_posts=1,
+                log_path="data/test_replies.jsonl",
+                report_path="data/test_discovery_report.json",
+            )
+        finally:
+            reply_helper.build_client = original_build_client
+            reply_helper.fetch_discovery_search = original_fetch_discovery
+            reply_helper.generate_reply_drafts = original_generate
+            reply_helper.has_replied_to = original_has_replied
+            reply_helper.get_authenticated_username = original_get_auth_user
+            reply_helper.post_reply = original_post_reply
+            reply_helper.verify_reply_visible = original_verify
+
+        self.assertEqual(result["posted_replies"], 0)
+        self.assertEqual(result["results"][0]["status"], "skipped_already_replied")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,13 @@ from .pipeline import (
     save_candidates,
     save_scored,
 )
-from .twitter_helper import run_mentions_workflow, run_twitter_helper
+from .twitter_helper import (
+    approve_queue,
+    list_approval_queue,
+    run_discovery_workflow,
+    run_mentions_workflow,
+    run_twitter_helper,
+)
 
 
 def _parse_keywords(raw: str) -> list[str]:
@@ -62,8 +68,33 @@ def build_parser() -> argparse.ArgumentParser:
     e2e.add_argument("--pick", type=int, default=1, help="1-based draft index")
     e2e.add_argument("--post", action="store_true", help="post replies (default is draft-only)")
     e2e.add_argument("--max-posts", type=int, default=3, help="max replies to post in one run")
+    e2e.add_argument("--approval-queue", action="store_true", help="queue qualified replies instead of posting")
+    e2e.add_argument("--min-confidence", type=int, default=70, help="minimum confidence to queue/post")
     e2e.add_argument("--log-path", default="data/replies.jsonl")
     e2e.add_argument("--report-path", default="data/mentions_report.json")
+
+    d2e = sub.add_parser("twitter-discovery", help="End-to-end discovery workflow with queue/post controls")
+    d2e.add_argument("--query", required=True, help="recent search query")
+    d2e.add_argument("--limit", type=int, default=20)
+    d2e.add_argument("--since-id", default=None)
+    d2e.add_argument("--draft-count", type=int, default=5)
+    d2e.add_argument("--pick", type=int, default=1, help="1-based draft index")
+    d2e.add_argument("--post", action="store_true", help="post replies")
+    d2e.add_argument("--approval-queue", action="store_true", help="queue qualified replies")
+    d2e.add_argument("--min-score", type=int, default=20)
+    d2e.add_argument("--min-confidence", type=int, default=70)
+    d2e.add_argument("--max-posts", type=int, default=3)
+    d2e.add_argument("--log-path", default="data/replies.jsonl")
+    d2e.add_argument("--report-path", default="data/discovery_report.json")
+
+    qlist = sub.add_parser("queue-list", help="List pending approval queue items")
+    qlist.add_argument("--json", action="store_true")
+
+    qapprove = sub.add_parser("queue-approve", help="Approve queued replies and post")
+    qapprove.add_argument("--ids", nargs="*", default=[], help="queue ids (q_xxx or xxx); empty means all")
+    qapprove.add_argument("--dry-run", action="store_true")
+    qapprove.add_argument("--max-posts", type=int, default=None)
+    qapprove.add_argument("--log-path", default="data/replies.jsonl")
 
     return p
 
@@ -134,6 +165,8 @@ def main() -> None:
             pick=args.pick,
             post=args.post,
             max_posts=args.max_posts,
+            approval_queue=args.approval_queue,
+            min_confidence=args.min_confidence,
             log_path=args.log_path,
             report_path=args.report_path,
         )
@@ -145,6 +178,57 @@ def main() -> None:
             print(f"log: {result['log_path']}")
         for item in result["results"]:
             print(f"- {item['status']} | {item['tweet_id']} | @{item['author']}")
+        return
+
+    if args.command == "twitter-discovery":
+        result = run_discovery_workflow(
+            query=args.query,
+            limit=args.limit,
+            since_id=args.since_id,
+            draft_count=args.draft_count,
+            pick=args.pick,
+            post=args.post,
+            approval_queue=args.approval_queue,
+            min_score=args.min_score,
+            min_confidence=args.min_confidence,
+            max_posts=args.max_posts,
+            log_path=args.log_path,
+            report_path=args.report_path,
+        )
+        print(f"query: {result['query']}")
+        print(f"fetched: {result['fetched_tweets']}")
+        print(f"posted: {result['posted_replies']}")
+        print(f"queued: {result['queued_replies']}")
+        print(f"report: {result['report_path']}")
+        for item in result["results"]:
+            print(f"- {item['status']} | {item['tweet_id']} | @{item.get('author', 'unknown')}")
+        return
+
+    if args.command == "queue-list":
+        rows = list_approval_queue()
+        if args.json:
+            import json
+            print(json.dumps({"count": len(rows), "items": rows}, ensure_ascii=False, indent=2))
+        else:
+            print(f"pending: {len(rows)}")
+            for row in rows:
+                qid = str(row.get("id", ""))
+                conf = row.get("confidence", "n/a")
+                tid = str(row.get("tweet_id", "") or row.get("in_reply_to", ""))
+                txt = str(row.get("text", "")).replace("\n", " ").strip()
+                print(f"- q_{qid} | tweet={tid} | conf={conf} | {txt[:120]}")
+        return
+
+    if args.command == "queue-approve":
+        result = approve_queue(
+            ids=args.ids,
+            dry_run=args.dry_run,
+            max_posts=args.max_posts,
+            log_path=args.log_path,
+        )
+        print(f"posted: {result['posted']} | skipped: {result['skipped']}")
+        for row in result["results"]:
+            print(f"- {row['status']} | {row.get('id', '')} | {row.get('tweet_id', '')}")
         return
 
 

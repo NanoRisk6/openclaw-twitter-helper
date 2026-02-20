@@ -266,6 +266,15 @@ python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-lim
 
 For `reply-twitter-e2e` and other scan/read-heavy reply flows, set `TWITTER_BEARER_TOKEN` in `.env`.
 
+Reply-engine native CLI (fully built workflows):
+
+```bash
+python -m src.reply_engine.cli twitter-e2e --handle OpenClawAI --mention-limit 20 --approval-queue --min-confidence 75
+python -m src.reply_engine.cli twitter-discovery --query "openclaw OR \"local ai\" lang:en -is:retweet min_faves:5" --approval-queue --min-score 20 --min-confidence 75
+python -m src.reply_engine.cli queue-list
+python -m src.reply_engine.cli queue-approve --ids q_12345678 --dry-run
+```
+
 ## Examples
 
 - `examples/tweet.txt`
