@@ -92,6 +92,7 @@ Useful flags:
 - Replied log: `~/.config/openclaw-twitter-helper/replied_to_<account>.jsonl`
 - Queue files: `~/.config/openclaw-twitter-helper/approval_queue/q_<id>.json`
 - Mentions checkpoint: `~/.config/openclaw-twitter-helper/last_mention_id_<account>.txt`
+- Run audit log: `~/.config/openclaw-twitter-helper/reply_engine_runs.jsonl`
 - Watchlists: `~/.config/openclaw-twitter-helper/watchlists.json`
 - Persona: `~/.config/openclaw-twitter-helper/persona/openclaw.md`
 

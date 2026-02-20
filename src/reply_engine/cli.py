@@ -122,6 +122,17 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.command in {"twitter-e2e", "twitter-discovery"}:
+        if args.post and args.approval_queue:
+            parser.error("Use either --post or --approval-queue, not both.")
+        if args.max_posts is not None and args.max_posts < 1:
+            parser.error("--max-posts must be >= 1")
+        if args.min_confidence < 0 or args.min_confidence > 100:
+            parser.error("--min-confidence must be between 0 and 100")
+    if args.command == "twitter-discovery":
+        if args.min_score < 0:
+            parser.error("--min-score must be >= 0")
+
     if args.command == "discover":
         keywords = _parse_keywords(args.keywords)
         candidates = run_discovery(keywords, limit=args.limit, local_input=args.local_input)

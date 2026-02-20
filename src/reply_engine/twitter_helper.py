@@ -29,6 +29,7 @@ CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 APPROVAL_DIR = CONFIG_DIR / "approval_queue"
 APPROVAL_DIR.mkdir(parents=True, exist_ok=True)
+RUN_LOG = CONFIG_DIR / "reply_engine_runs.jsonl"
 DEFAULT_REPLY_MODES = [
     "direct",
     "curious",
@@ -117,6 +118,29 @@ def _replied_log_path(account: Optional[str] = None) -> Path:
     return CONFIG_DIR / f"replied_to_{acct}.jsonl"
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{uuid.uuid4().hex[:8]}")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _append_jsonl(path: Path, row: Dict[str, Any], ensure_ascii: bool = True) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=ensure_ascii) + "\n")
+
+
+def _log_run_event(kind: str, payload: Dict[str, Any]) -> None:
+    row = {
+        "ts": datetime.now().isoformat(),
+        "account": _account_name(),
+        "kind": kind,
+        "payload": payload,
+    }
+    _append_jsonl(RUN_LOG, row, ensure_ascii=False)
+
+
 def load_last_mention_id(account: Optional[str] = None) -> Optional[str]:
     path = _last_mention_path(account)
     if not path.exists():
@@ -127,7 +151,7 @@ def load_last_mention_id(account: Optional[str] = None) -> Optional[str]:
 
 def save_last_mention_id(tweet_id: str, account: Optional[str] = None) -> None:
     path = _last_mention_path(account)
-    path.write_text(str(tweet_id).strip(), encoding="utf-8")
+    _atomic_write_text(path, str(tweet_id).strip())
 
 
 def build_client() -> Any:
@@ -420,9 +444,7 @@ def run_reply_many_ways(tweet: str, modes: List[str]) -> Dict[str, Any]:
 
 
 def log_reply(log_path: Path, row: Dict[str, Any]) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=True) + "\n")
+    _append_jsonl(log_path, row, ensure_ascii=True)
 
 
 def has_replied_to(tweet_id: str, account: Optional[str] = None) -> bool:
@@ -458,8 +480,7 @@ def record_replied(tweet_id: str, reply_id: str, source: str, account: Optional[
         "reply_id": rid,
         "source": source,
     }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=True) + "\n")
+    _append_jsonl(path, row, ensure_ascii=True)
 
 
 def _queue_path(qid: str) -> Path:
@@ -471,7 +492,7 @@ def queue_reply_candidate(item: Dict[str, Any]) -> str:
     payload = dict(item)
     payload["id"] = qid
     payload["queued_at"] = datetime.now().isoformat()
-    _queue_path(qid).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(_queue_path(qid), json.dumps(payload, ensure_ascii=False, indent=2))
     return qid
 
 
@@ -523,7 +544,9 @@ def cleanup_queue(remove_duplicates: bool = True) -> Dict[str, Any]:
             continue
         seen_targets.add(tweet_id)
         kept += 1
-    return {"removed": removed, "kept": kept, "reasons": reasons}
+    result = {"removed": removed, "kept": kept, "reasons": reasons}
+    _log_run_event("queue_clean", result)
+    return result
 
 
 def score_discovery_candidate(item: Dict[str, Any]) -> int:
@@ -952,10 +975,18 @@ def run_mentions_workflow(
         "results": results,
         "timestamp": datetime.now().isoformat(),
     }
-    report_file.parent.mkdir(parents=True, exist_ok=True)
-    report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    _atomic_write_text(report_file, json.dumps(report, indent=2))
     report["report_path"] = str(report_file)
     report["log_path"] = str(log_file)
+    _log_run_event(
+        "mentions_workflow",
+        {
+            "fetched_mentions": report["fetched_mentions"],
+            "posted_replies": report["posted_replies"],
+            "queued_replies": report["queued_replies"],
+            "source": report["source"],
+        },
+    )
     return report
 
 
@@ -1110,10 +1141,18 @@ def run_discovery_workflow(
         "results": results,
         "timestamp": datetime.now().isoformat(),
     }
-    report_file.parent.mkdir(parents=True, exist_ok=True)
-    report_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    _atomic_write_text(report_file, json.dumps(report, indent=2))
     report["report_path"] = str(report_file)
     report["log_path"] = str(log_file)
+    _log_run_event(
+        "discovery_workflow",
+        {
+            "query": query,
+            "fetched_tweets": report["fetched_tweets"],
+            "posted_replies": report["posted_replies"],
+            "queued_replies": report["queued_replies"],
+        },
+    )
     return report
 
 
@@ -1190,4 +1229,18 @@ def approve_queue(
         res["reply_url"] = reply_url
         out_rows.append(res)
 
-    return {"requested": len(selected) if selected else len(out_rows), "posted": posted, "skipped": skipped, "results": out_rows}
+    result = {
+        "requested": len(selected) if selected else len(out_rows),
+        "posted": posted,
+        "skipped": skipped,
+        "results": out_rows,
+    }
+    _log_run_event(
+        "queue_approve",
+        {
+            "requested": result["requested"],
+            "posted": result["posted"],
+            "skipped": result["skipped"],
+        },
+    )
+    return result
