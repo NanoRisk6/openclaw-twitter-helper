@@ -2,20 +2,23 @@
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import math
 import os
 import re
 import secrets
 import sys
+import time
 from datetime import datetime, timezone
+from email.message import Message
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 API_BASE = "https://api.twitter.com/2"
 TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
@@ -28,6 +31,11 @@ OPENCLAW_SUFFIX_RE = re.compile(
 )
 WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_'-]{2,}")
 TOOL_ROOT = Path(__file__).resolve().parents[1]
+TOKEN_SERVICE_NAME = "openclaw-twitter-helper"
+TOKEN_CONFIG_DIR = Path.home() / ".config" / "openclaw-twitter-helper"
+TOKEN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+TOKENS_JSON_FALLBACK = TOKEN_CONFIG_DIR / "tokens.json"
+ACTIVE_ACCOUNT = "default"
 
 CONFIG_KEYS = [
     "TWITTER_CLIENT_ID",
@@ -38,6 +46,13 @@ CONFIG_KEYS = [
     "TWITTER_REDIRECT_URI",
     "TWITTER_WEBSITE_URL",
     "TWITTER_SCOPES",
+]
+
+REPLY_POST_KEYS = [
+    "TWITTER_API_KEY",
+    "TWITTER_API_SECRET",
+    "TWITTER_ACCESS_TOKEN",
+    "TWITTER_ACCESS_SECRET",
 ]
 
 
@@ -51,6 +66,12 @@ class Config:
 
 class TwitterHelperError(Exception):
     pass
+
+
+try:
+    import keyring
+except Exception:  # pragma: no cover - optional dependency fallback
+    keyring = None
 
 
 STOPWORDS = {
@@ -121,8 +142,108 @@ def write_env_file(env_path: Path, values: Dict[str, str]) -> None:
     env_path.write_text("\n".join(lines), encoding="utf-8")
 
 
+class TokenManager:
+    def __init__(self, env_path: Path, account: str = "default"):
+        self.env_path = env_path
+        self.account = account
+        self.key_prefix = f"{TOKEN_SERVICE_NAME}:{account}"
+
+    def _keyring_available(self) -> bool:
+        return keyring is not None
+
+    def keyring_status_label(self) -> str:
+        if not self._keyring_available():
+            return "unavailable (module missing, using .env fallback)"
+        try:
+            backend = keyring.get_keyring()
+            return f"accessible ({backend.__class__.__name__})"
+        except Exception:
+            return "unavailable (runtime error, using .env fallback)"
+
+    def _read_keyring_payload(self) -> Optional[Dict[str, str]]:
+        if not self._keyring_available():
+            return None
+        try:
+            raw = keyring.get_password(self.key_prefix, "oauth_tokens")
+            if not raw:
+                return None
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {k: str(v) if v is not None else "" for k, v in parsed.items()}
+            return None
+        except Exception:
+            return None
+
+    def save_tokens(
+        self,
+        access_token: str,
+        refresh_token: Optional[str],
+        env_values: Dict[str, str],
+    ) -> str:
+        payload = {
+            "access_token": access_token,
+            "refresh_token": refresh_token or "",
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "account": self.account,
+        }
+
+        if self._keyring_available():
+            try:
+                keyring.set_password(self.key_prefix, "oauth_tokens", json.dumps(payload))
+                # Scrub plaintext OAuth2 tokens from .env when secure storage is available.
+                env_values["TWITTER_OAUTH2_ACCESS_TOKEN"] = ""
+                env_values["TWITTER_OAUTH2_REFRESH_TOKEN"] = ""
+                write_env_file(self.env_path, env_values)
+                return "keyring"
+            except Exception:
+                pass
+
+        env_values["TWITTER_OAUTH2_ACCESS_TOKEN"] = access_token
+        env_values["TWITTER_OAUTH2_REFRESH_TOKEN"] = refresh_token or ""
+        write_env_file(self.env_path, env_values)
+        TOKENS_JSON_FALLBACK.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        TOKENS_JSON_FALLBACK.chmod(0o600)
+        return "env+json"
+
+    def get_access_token(self, env_values: Dict[str, str]) -> str:
+        token = os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN")
+        if token:
+            return token
+        payload = self._read_keyring_payload()
+        if payload and payload.get("access_token"):
+            return payload["access_token"]
+        return env_values.get("TWITTER_OAUTH2_ACCESS_TOKEN", "")
+
+    def get_refresh_token(self, env_values: Dict[str, str]) -> str:
+        token = os.getenv("TWITTER_OAUTH2_REFRESH_TOKEN")
+        if token:
+            return token
+        payload = self._read_keyring_payload()
+        if payload and payload.get("refresh_token"):
+            return payload["refresh_token"]
+        return env_values.get("TWITTER_OAUTH2_REFRESH_TOKEN", "")
+
+    def migrate_from_env(self, env_values: Dict[str, str]) -> bool:
+        if not self._keyring_available():
+            return False
+        if self._read_keyring_payload():
+            return False
+        access = env_values.get("TWITTER_OAUTH2_ACCESS_TOKEN", "")
+        refresh = env_values.get("TWITTER_OAUTH2_REFRESH_TOKEN", "")
+        if not access:
+            return False
+        self.save_tokens(access, refresh, env_values)
+        return True
+
+
+def token_manager(env_path: Path) -> TokenManager:
+    return TokenManager(env_path=env_path, account=ACTIVE_ACCOUNT)
+
+
 def resolve_config(env_path: Path) -> Tuple[Config, Dict[str, str]]:
     env = load_env_file(env_path)
+    tm = token_manager(env_path)
+    tm.migrate_from_env(env)
 
     def get(name: str) -> str:
         return os.getenv(name) or env.get(name, "")
@@ -130,8 +251,8 @@ def resolve_config(env_path: Path) -> Tuple[Config, Dict[str, str]]:
     cfg = Config(
         client_id=get("TWITTER_CLIENT_ID"),
         client_secret=get("TWITTER_CLIENT_SECRET"),
-        access_token=get("TWITTER_OAUTH2_ACCESS_TOKEN"),
-        refresh_token=get("TWITTER_OAUTH2_REFRESH_TOKEN"),
+        access_token=tm.get_access_token(env),
+        refresh_token=tm.get_refresh_token(env),
     )
 
     missing = [
@@ -153,13 +274,23 @@ def resolve_config(env_path: Path) -> Tuple[Config, Dict[str, str]]:
     return cfg, env
 
 
-def http_json(
+def _headers_to_dict(headers: Optional[Message]) -> Dict[str, str]:
+    if headers is None:
+        return {}
+    out: Dict[str, str] = {}
+    for k, v in headers.items():
+        out[str(k).lower()] = str(v)
+    return out
+
+
+def http_json_with_headers(
     method: str,
     url: str,
     headers: Dict[str, str],
     payload: Optional[Dict[str, object]] = None,
     form_payload: Optional[Dict[str, str]] = None,
-) -> Tuple[int, Dict[str, object]]:
+    max_retries: int = 5,
+) -> Tuple[int, Dict[str, object], Dict[str, str]]:
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -168,19 +299,57 @@ def http_json(
         data = urllib.parse.urlencode(form_payload).encode("utf-8")
         headers = {**headers, "Content-Type": "application/x-www-form-urlencoded"}
 
-    req = urllib.request.Request(url=url, method=method, headers=headers, data=data)
-
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            raw = resp.read().decode("utf-8")
-            return resp.status, json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8") if exc.fp else ""
+    for attempt in range(max(1, max_retries)):
+        req = urllib.request.Request(url=url, method=method, headers=headers, data=data)
         try:
-            body = json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            body = {"raw": raw}
-        return exc.code, body
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                raw = resp.read().decode("utf-8")
+                return resp.status, json.loads(raw) if raw else {}, _headers_to_dict(resp.headers)
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8") if exc.fp else ""
+            try:
+                body = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                body = {"raw": raw}
+            hdrs = _headers_to_dict(exc.headers)
+            try:
+                exc.close()
+            except Exception:
+                pass
+            if exc.code == 429 and attempt < max_retries - 1:
+                reset_raw = hdrs.get("x-rate-limit-reset", "")
+                sleep_seconds = 10.0
+                try:
+                    reset_at = float(reset_raw)
+                    sleep_seconds = max(10.0, reset_at - time.time() + 2.0)
+                except Exception:
+                    sleep_seconds = 10.0 * (attempt + 1)
+                sleep_seconds = min(sleep_seconds, 90.0)
+                print(
+                    f"Rate limit hit (429). Sleeping {int(sleep_seconds)}s before retry "
+                    f"({attempt + 1}/{max_retries - 1})..."
+                )
+                time.sleep(sleep_seconds)
+                continue
+            return exc.code, body, hdrs
+    return 429, {"detail": "max retries exceeded"}, {}
+
+
+def http_json(
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    payload: Optional[Dict[str, object]] = None,
+    form_payload: Optional[Dict[str, str]] = None,
+) -> Tuple[int, Dict[str, object]]:
+    status, body, _ = http_json_with_headers(
+        method=method,
+        url=url,
+        headers=headers,
+        payload=payload,
+        form_payload=form_payload,
+    )
+    return status, body
 
 
 def api_get_with_token(url: str, bearer_token: str) -> Tuple[int, Dict[str, object]]:
@@ -196,11 +365,12 @@ def get_env_value(env: Dict[str, str], key: str, default: str = "") -> str:
     return os.getenv(key) or env.get(key, default)
 
 
-def get_read_bearer_token(env: Dict[str, str]) -> str:
-    token = (
-        get_env_value(env, "TWITTER_BEARER_TOKEN")
-        or get_env_value(env, "TWITTER_OAUTH2_ACCESS_TOKEN")
-    )
+def get_read_bearer_token(env: Dict[str, str], env_path: Optional[Path] = None) -> str:
+    token = get_env_value(env, "TWITTER_BEARER_TOKEN")
+    if not token and env_path is not None:
+        token = token_manager(env_path).get_access_token(env)
+    if not token:
+        token = get_env_value(env, "TWITTER_OAUTH2_ACCESS_TOKEN")
     if not token:
         raise TwitterHelperError(
             "Missing TWITTER_BEARER_TOKEN (or TWITTER_OAUTH2_ACCESS_TOKEN) for browse-twitter."
@@ -231,9 +401,7 @@ def refresh_tokens(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> C
 
     env_values["TWITTER_CLIENT_ID"] = cfg.client_id
     env_values["TWITTER_CLIENT_SECRET"] = cfg.client_secret
-    env_values["TWITTER_OAUTH2_ACCESS_TOKEN"] = new_access
-    env_values["TWITTER_OAUTH2_REFRESH_TOKEN"] = new_refresh
-    write_env_file(env_path, env_values)
+    token_manager(env_path).save_tokens(new_access, new_refresh, env_values)
 
     return Config(
         client_id=cfg.client_id,
@@ -251,11 +419,72 @@ def me(cfg: Config) -> Tuple[int, Dict[str, object]]:
     )
 
 
+def me_with_headers(cfg: Config) -> Tuple[int, Dict[str, object], Dict[str, str]]:
+    return http_json_with_headers(
+        "GET",
+        f"{API_BASE}/users/me",
+        {"Authorization": f"Bearer {cfg.access_token}"},
+    )
+
+
 def fetch_tweet(cfg: Config, tweet_id: str) -> Tuple[int, Dict[str, object]]:
     return http_json(
         "GET",
         f"{API_BASE}/tweets/{tweet_id}?tweet.fields=author_id,created_at",
         {"Authorization": f"Bearer {cfg.access_token}"},
+    )
+
+
+def fetch_tweet_with_author(cfg: Config, tweet_id: str) -> Tuple[int, Dict[str, object]]:
+    return http_json(
+        "GET",
+        (
+            f"{API_BASE}/tweets/{tweet_id}"
+            "?expansions=author_id&tweet.fields=author_id,created_at&user.fields=username"
+        ),
+        {"Authorization": f"Bearer {cfg.access_token}"},
+    )
+
+
+def build_x_url(tweet_id: str, username: Optional[str] = None) -> str:
+    clean_id = str(tweet_id).strip()
+    if username:
+        return f"https://x.com/{username}/status/{clean_id}"
+    return f"https://x.com/i/web/status/{clean_id}"
+
+
+def verify_post_visible(
+    cfg: Config,
+    tweet_id: str,
+    attempts: int = 3,
+    delay_seconds: float = 1.0,
+) -> Tuple[str, str]:
+    last_status = -1
+    last_body: Dict[str, object] = {}
+    for attempt in range(1, max(1, attempts) + 1):
+        status, body = fetch_tweet_with_author(cfg, tweet_id)
+        last_status = status
+        last_body = body
+        if status == 200 and isinstance(body, dict):
+            data = body.get("data")
+            if isinstance(data, dict) and str(data.get("id", "")) == str(tweet_id):
+                author_id = str(data.get("author_id", ""))
+                username = None
+                includes = body.get("includes")
+                if isinstance(includes, dict) and isinstance(includes.get("users"), list):
+                    for user in includes["users"]:
+                        if isinstance(user, dict) and str(user.get("id", "")) == author_id:
+                            username = str(user.get("username", "")).strip() or None
+                            break
+                return (username or "", build_x_url(tweet_id, username=username))
+
+        if attempt < attempts:
+            time.sleep(delay_seconds)
+
+    raise TwitterHelperError(
+        "Twitter returned a post ID but visibility verification failed. "
+        "Do not assume it was posted. "
+        f"Last check ({last_status}): {json.dumps(last_body, ensure_ascii=False)}"
     )
 
 
@@ -480,7 +709,7 @@ def cmd_reply_engine(args: argparse.Namespace) -> int:
 
 def cmd_browse_twitter(env_path: Path, args: argparse.Namespace) -> int:
     env = load_env_file(env_path)
-    bearer = get_read_bearer_token(env)
+    bearer = get_read_bearer_token(env, env_path)
     limit = max(5, min(args.limit, 100))
     max_pages = max(1, min(args.max_pages, 10))
 
@@ -771,7 +1000,7 @@ def make_inspiration_drafts(topic: str, sample_texts: List[str], draft_count: in
 
 def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
     env = load_env_file(env_path)
-    bearer = get_read_bearer_token(env)
+    bearer = get_read_bearer_token(env, env_path)
     limit = max(5, min(args.limit, 100))
     max_pages = max(1, min(args.max_pages, 10))
 
@@ -850,13 +1079,15 @@ def cmd_inspire_tweets(env_path: Path, args: argparse.Namespace) -> int:
 
 def config_status(env_path: Path) -> Dict[str, object]:
     env = load_env_file(env_path)
+    tm = token_manager(env_path)
+    tm.migrate_from_env(env)
     exists = env_path.exists()
 
     has_client_id = bool(get_env_value(env, "TWITTER_CLIENT_ID"))
     has_client_secret = bool(get_env_value(env, "TWITTER_CLIENT_SECRET"))
     has_bearer_token = bool(get_env_value(env, "TWITTER_BEARER_TOKEN"))
-    has_access_token = bool(get_env_value(env, "TWITTER_OAUTH2_ACCESS_TOKEN"))
-    has_refresh_token = bool(get_env_value(env, "TWITTER_OAUTH2_REFRESH_TOKEN"))
+    has_access_token = bool(tm.get_access_token(env))
+    has_refresh_token = bool(tm.get_refresh_token(env))
 
     ready_for_oauth_login = exists and has_client_id and has_client_secret
     ready_for_posting = (
@@ -1263,19 +1494,25 @@ def cmd_openclaw_autopost(
         return 0
 
     print(f"Posting Open Claw auto-tweet ({len(text)}/{MAX_TWEET_LEN} chars)...")
-    _, (status, body) = post_with_retry(cfg, env_path, env_values, text)
+    fresh, (status, body) = post_with_retry(cfg, env_path, env_values, text)
     if status < 200 or status >= 300:
         raise TwitterHelperError(
             f"Auto-post failed ({status}): {json.dumps(body, ensure_ascii=False)}"
         )
     data = body.get("data") if isinstance(body, dict) else None
     tweet_id = data.get("id") if isinstance(data, dict) else None
-    print(f"Open Claw auto-tweet posted: id={tweet_id}")
+    if not tweet_id:
+        raise TwitterHelperError("Auto-post returned no tweet id.")
+    _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+    print(f"Open Claw auto-tweet posted and verified: id={tweet_id}")
+    print(f"URL: {tweet_url}")
     return 0
 
 
 def cmd_auth_login(env_path: Path, args: argparse.Namespace) -> int:
     env = load_env_file(env_path)
+    tm = token_manager(env_path)
+    tm.migrate_from_env(env)
     client_id = get_env_value(env, "TWITTER_CLIENT_ID")
     client_secret = get_env_value(env, "TWITTER_CLIENT_SECRET")
 
@@ -1339,8 +1576,6 @@ def cmd_auth_login(env_path: Path, args: argparse.Namespace) -> int:
         code_verifier=code_verifier,
     )
 
-    env["TWITTER_OAUTH2_ACCESS_TOKEN"] = access_token
-    env["TWITTER_OAUTH2_REFRESH_TOKEN"] = refresh_token
     env["TWITTER_CLIENT_ID"] = client_id
     env["TWITTER_CLIENT_SECRET"] = client_secret
     env["TWITTER_REDIRECT_URI"] = redirect_uri
@@ -1348,9 +1583,8 @@ def cmd_auth_login(env_path: Path, args: argparse.Namespace) -> int:
         env, "TWITTER_WEBSITE_URL", infer_website_url(redirect_uri)
     )
     env["TWITTER_SCOPES"] = scopes
-    write_env_file(env_path, env)
-
-    print("OAuth login complete. Tokens saved.")
+    storage = tm.save_tokens(access_token, refresh_token, env)
+    print(f"OAuth login complete. Tokens saved ({storage}).")
     if getattr(args, "skip_doctor", False):
         print("Next step: run `doctor`.")
         return 0
@@ -1388,6 +1622,11 @@ def cmd_doctor(env_path: Path) -> int:
     print(f"Env file: {env_path}")
 
     env = load_env_file(env_path)
+    tm = token_manager(env_path)
+    migrated = tm.migrate_from_env(env)
+    if migrated:
+        print("[PASS] Migrated OAuth2 tokens from .env to keyring.")
+    print(f"Keyring status: {tm.keyring_status_label()}")
     if not env_path.exists():
         print("[FAIL] Env file does not exist.")
         print("Run: setup")
@@ -1401,11 +1640,11 @@ def cmd_doctor(env_path: Path) -> int:
         print("Run: setup")
         return 1
 
-    missing_tokens = [
-        k
-        for k in ["TWITTER_OAUTH2_ACCESS_TOKEN", "TWITTER_OAUTH2_REFRESH_TOKEN"]
-        if not get_env_value(env, k)
-    ]
+    missing_tokens = []
+    if not tm.get_access_token(env):
+        missing_tokens.append("TWITTER_OAUTH2_ACCESS_TOKEN (or keyring token)")
+    if not tm.get_refresh_token(env):
+        missing_tokens.append("TWITTER_OAUTH2_REFRESH_TOKEN (or keyring token)")
     if missing_tokens:
         print(f"[FAIL] Missing OAuth tokens: {', '.join(missing_tokens)}")
         print("Run: auth-login (this opens the OAuth2 browser flow to generate tokens)")
@@ -1421,7 +1660,7 @@ def cmd_doctor(env_path: Path) -> int:
     try:
         cfg, env_values = resolve_config(env_path)
         cfg = ensure_auth(cfg, env_path, env_values)
-        status, body = me(cfg)
+        status, body, headers = me_with_headers(cfg)
         if status != 200:
             print(f"[FAIL] Auth check failed with status {status}")
             print(json.dumps(body, ensure_ascii=False))
@@ -1431,11 +1670,208 @@ def cmd_doctor(env_path: Path) -> int:
         username = data.get("username") if isinstance(data, dict) else None
         user_id = data.get("id") if isinstance(data, dict) else None
         print(f"[PASS] API auth works as @{username} (id={user_id}).")
+        remaining = headers.get("x-rate-limit-remaining", "N/A")
+        reset = headers.get("x-rate-limit-reset", "N/A")
+        print(f"[INFO] Rate limit remaining: {remaining} (reset: {reset})")
         print("You're ready. Try: post --text \"hello world\"")
         return 0
     except TwitterHelperError as exc:
         print(f"[FAIL] {exc}")
         return 1
+
+
+def diagnose_openclaw(
+    env_path: Path,
+    skip_network: bool = False,
+    reply_target_id: Optional[str] = None,
+) -> Dict[str, object]:
+    env = load_env_file(env_path)
+    tm = token_manager(env_path)
+    tm.migrate_from_env(env)
+    report: Dict[str, object] = {
+        "env_file": str(env_path),
+        "env_exists": env_path.exists(),
+        "posting": {"ready": False, "issues": []},
+        "reply_scan": {"ready": False, "issues": []},
+        "reply_post": {"ready": False, "issues": []},
+        "actions": [],
+    }
+
+    posting_issues: List[str] = []
+    reply_scan_issues: List[str] = []
+    reply_post_issues: List[str] = []
+    actions: List[str] = []
+
+    if not report["env_exists"]:
+        posting_issues.append("Missing .env file.")
+        reply_scan_issues.append("Missing .env file.")
+        reply_post_issues.append("Missing .env file.")
+        actions.append("run setup")
+    else:
+        missing_base = [
+            k for k in ["TWITTER_CLIENT_ID", "TWITTER_CLIENT_SECRET"] if not get_env_value(env, k)
+        ]
+        missing_tokens = []
+        if not tm.get_access_token(env):
+            missing_tokens.append("TWITTER_OAUTH2_ACCESS_TOKEN (or keyring token)")
+        if not tm.get_refresh_token(env):
+            missing_tokens.append("TWITTER_OAUTH2_REFRESH_TOKEN (or keyring token)")
+        if missing_base:
+            posting_issues.append(f"Missing app config: {', '.join(missing_base)}")
+            actions.append("run setup")
+        if missing_tokens:
+            posting_issues.append(f"Missing OAuth2 tokens: {', '.join(missing_tokens)}")
+            actions.append("run auth-login")
+
+    cfg: Optional[Config] = None
+    env_values: Dict[str, str] = {}
+    if not posting_issues:
+        try:
+            cfg, env_values = resolve_config(env_path)
+            if not skip_network:
+                cfg = ensure_auth(cfg, env_path, env_values)
+                me_status, me_body = me(cfg)
+                if me_status != 200:
+                    posting_issues.append(
+                        f"OAuth2 auth check failed ({me_status}): {json.dumps(me_body, ensure_ascii=False)}"
+                    )
+                    actions.append("run auth-login")
+        except TwitterHelperError as exc:
+            posting_issues.append(str(exc))
+            actions.append("run auth-login")
+
+    bearer = get_env_value(env, "TWITTER_BEARER_TOKEN")
+    if not bearer:
+        reply_scan_issues.append("Missing TWITTER_BEARER_TOKEN for browse/mentions scanning.")
+        actions.append("add TWITTER_BEARER_TOKEN in setup")
+    elif not skip_network:
+        scan_status, scan_body = api_get_with_token(
+            f"{API_BASE}/tweets/search/recent?query=openclaw%20lang%3Aen%20-is%3Aretweet&max_results=10",
+            bearer,
+        )
+        if scan_status >= 400:
+            reply_scan_issues.append(
+                f"Bearer scan check failed ({scan_status}): {json.dumps(scan_body, ensure_ascii=False)}"
+            )
+            actions.append("replace TWITTER_BEARER_TOKEN with a valid App-Only token")
+
+    try:
+        reply_engine_spec = importlib.util.find_spec("reply_engine.twitter_helper")
+    except ModuleNotFoundError:
+        reply_engine_spec = None
+    if reply_engine_spec is None:
+        reply_post_issues.append("Reply engine module not importable.")
+        actions.append("pip install -e .")
+        actions.append("pip install -r requirements-reply-engine.txt")
+
+    missing_reply_keys = [k for k in REPLY_POST_KEYS if not get_env_value(env, k)]
+    if missing_reply_keys:
+        reply_post_issues.append(f"Missing OAuth1 reply-post keys: {', '.join(missing_reply_keys)}")
+        actions.append("add OAuth1 keys/tokens to .env for reply posting")
+
+    if reply_target_id:
+        if cfg is None:
+            reply_post_issues.append("Cannot preflight reply target because OAuth2 posting auth is not ready.")
+        elif skip_network:
+            reply_post_issues.append("Reply target preflight skipped due to --skip-network.")
+        else:
+            target_status, target_body = fetch_tweet(cfg, reply_target_id)
+            if target_status >= 400 or (
+                isinstance(target_body, dict) and target_body.get("errors")
+            ):
+                reply_post_issues.append(
+                    "Reply target is not visible/deleted for this account: "
+                    f"{json.dumps(target_body, ensure_ascii=False)}"
+                )
+                actions.append("use a visible tweet ID for --in-reply-to")
+
+    report["posting"] = {"ready": len(posting_issues) == 0, "issues": posting_issues}
+    report["reply_scan"] = {"ready": len(reply_scan_issues) == 0, "issues": reply_scan_issues}
+    report["reply_post"] = {"ready": len(reply_post_issues) == 0, "issues": reply_post_issues}
+    report["overall_ready"] = (
+        report["posting"]["ready"] and report["reply_scan"]["ready"] and report["reply_post"]["ready"]
+    )
+
+    # Keep actions deterministic and duplicate-free.
+    seen = set()
+    deduped = []
+    for action in actions:
+        if action in seen:
+            continue
+        seen.add(action)
+        deduped.append(action)
+    report["actions"] = deduped
+    return report
+
+
+def cmd_auto_diagnose(env_path: Path, args: argparse.Namespace) -> int:
+    print("Open Claw Auto Diagnose")
+    print(f"Env file: {env_path}")
+    report = diagnose_openclaw(
+        env_path=env_path,
+        skip_network=args.skip_network,
+        reply_target_id=args.reply_target_id,
+    )
+
+    # Optional OAuth2 self-heal pass for interactive runs.
+    posting_ready = bool((report.get("posting") or {}).get("ready"))
+    if (
+        not posting_ready
+        and not args.no_repair_auth
+        and sys.stdin.isatty()
+        and any(a in {"run auth-login", "run setup"} for a in report.get("actions", []))
+    ):
+        env = load_env_file(env_path)
+        has_base = bool(get_env_value(env, "TWITTER_CLIENT_ID")) and bool(
+            get_env_value(env, "TWITTER_CLIENT_SECRET")
+        )
+        if has_base:
+            print("Posting auth is unhealthy. Attempting interactive OAuth2 repair...")
+            auth_args = argparse.Namespace(
+                no_open=False,
+                skip_doctor=False,
+                auto_post=False,
+                auto_post_text=None,
+            )
+            rc = cmd_auth_login(env_path, auth_args)
+            if rc == 0:
+                print("Re-running diagnostics after OAuth2 repair...")
+                report = diagnose_openclaw(
+                    env_path=env_path,
+                    skip_network=args.skip_network,
+                    reply_target_id=args.reply_target_id,
+                )
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        posting = report.get("posting", {})
+        reply_scan = report.get("reply_scan", {})
+        reply_post = report.get("reply_post", {})
+        print(
+            f"[{'PASS' if posting.get('ready') else 'FAIL'}] posting readiness"
+        )
+        for issue in posting.get("issues", []):
+            print(f"  - {issue}")
+        print(
+            f"[{'PASS' if reply_scan.get('ready') else 'FAIL'}] reply scan readiness"
+        )
+        for issue in reply_scan.get("issues", []):
+            print(f"  - {issue}")
+        print(
+            f"[{'PASS' if reply_post.get('ready') else 'FAIL'}] reply post readiness"
+        )
+        for issue in reply_post.get("issues", []):
+            print(f"  - {issue}")
+        actions = report.get("actions", [])
+        if actions:
+            print("Suggested fixes:")
+            for action in actions:
+                print(f"  - {action}")
+        if report.get("overall_ready"):
+            print("All posting/reply paths are healthy.")
+
+    return 0 if report.get("overall_ready") else 1
 
 
 def cmd_check_auth(cfg: Config, env_path: Path, env_values: Dict[str, str]) -> int:
@@ -1479,7 +1915,7 @@ def cmd_post(
                 f"{json.dumps(check_body.get('errors'), ensure_ascii=False)}"
             )
 
-    _, (status, body) = post_with_retry(
+    fresh, (status, body) = post_with_retry(
         cfg,
         env_path,
         env_values,
@@ -1494,7 +1930,11 @@ def cmd_post(
 
     data = body.get("data") if isinstance(body, dict) else None
     tweet_id = data.get("id") if isinstance(data, dict) else None
-    print(f"Tweet posted successfully: id={tweet_id}")
+    if not tweet_id:
+        raise TwitterHelperError("Post returned no tweet id.")
+    _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+    print(f"Tweet posted and verified: id={tweet_id}")
+    print(f"URL: {tweet_url}")
     return 0
 
 
@@ -1526,7 +1966,9 @@ def cmd_thread(
             raise TwitterHelperError(f"Thread post {idx} returned no tweet id")
 
         parent_id = tweet_id
-        print(f"Posted {idx}/{len(tweets)}: id={tweet_id}")
+        _, tweet_url = verify_post_visible(fresh, str(tweet_id))
+        print(f"Posted and verified {idx}/{len(tweets)}: id={tweet_id}")
+        print(f"URL: {tweet_url}")
 
     print("Thread posted successfully.")
     return 0
@@ -1541,6 +1983,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--env-file",
         default=".env",
         help="Path to env file (default: .env)",
+    )
+    parser.add_argument(
+        "--account",
+        default="default",
+        help="Account namespace for secure token storage (default: default)",
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1579,6 +2026,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("doctor", help="Run guided diagnostics for config + auth")
+    p_diag = sub.add_parser(
+        "auto-diagnose",
+        help="Auto-diagnose posting and replying readiness, with optional OAuth2 self-repair",
+    )
+    p_diag.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable diagnostics JSON",
+    )
+    p_diag.add_argument(
+        "--skip-network",
+        action="store_true",
+        help="Only validate local config/deps without API calls",
+    )
+    p_diag.add_argument(
+        "--reply-target-id",
+        help="Optional tweet ID to preflight visibility for replies",
+    )
+    p_diag.add_argument(
+        "--no-repair-auth",
+        action="store_true",
+        help="Disable interactive OAuth2 repair attempt when posting auth is unhealthy",
+    )
     sub.add_parser("app-settings", help="Print exact Twitter app settings to use")
     sub.add_parser("walkthrough", help="Print end-to-end setup/posting walkthrough")
     sub.add_parser("openclaw-status", help="Print machine-readable readiness JSON")
@@ -1747,8 +2217,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    global ACTIVE_ACCOUNT
     parser = build_parser()
     args = parser.parse_args(argv)
+    ACTIVE_ACCOUNT = args.account or "default"
+    os.environ["OPENCLAW_TWITTER_ACCOUNT"] = ACTIVE_ACCOUNT
 
     env_path = Path(args.env_file)
 
@@ -1785,6 +2258,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return cmd_auth_login(env_path, args)
         if args.command == "doctor":
             return cmd_doctor(env_path)
+        if args.command == "auto-diagnose":
+            return cmd_auto_diagnose(env_path, args)
 
         cfg, env_values = resolve_config(env_path)
 

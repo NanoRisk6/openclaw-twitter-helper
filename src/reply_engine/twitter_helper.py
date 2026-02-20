@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -12,6 +13,11 @@ try:
 except Exception:  # optional dependency
     def load_dotenv() -> None:
         return None
+
+try:
+    import keyring
+except Exception:  # optional dependency fallback
+    keyring = None
 
 
 TWEET_ID_RE = re.compile(r"(?:status/)?(\d{10,30})")
@@ -44,6 +50,17 @@ def get_authenticated_username(client: Any) -> Optional[str]:
 def _required_env() -> Dict[str, Optional[str]]:
     load_dotenv()
     bearer = os.getenv("TWITTER_BEARER_TOKEN") or os.getenv("TWITTER_OAUTH2_ACCESS_TOKEN")
+    if not bearer and keyring is not None:
+        account = os.getenv("OPENCLAW_TWITTER_ACCOUNT", "default")
+        service = f"openclaw-twitter-helper:{account}"
+        try:
+            raw = keyring.get_password(service, "oauth_tokens")
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    bearer = str(parsed.get("access_token", "")).strip() or bearer
+        except Exception:
+            pass
     return {
         "TWITTER_BEARER_TOKEN": bearer,
         "TWITTER_API_KEY": os.getenv("TWITTER_API_KEY"),
@@ -173,6 +190,58 @@ def post_reply(client: Any, tweet_id: str, text: str) -> str:
     return str(res.data["id"])
 
 
+def verify_reply_visible(
+    client: Any,
+    reply_id: str,
+    expected_username: Optional[str] = None,
+    attempts: int = 3,
+    delay_seconds: float = 1.0,
+) -> Dict[str, str]:
+    last_error = "unknown"
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            res = client.get_tweet(
+                id=reply_id,
+                expansions=["author_id"],
+                tweet_fields=["author_id", "created_at"],
+                user_fields=["username"],
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+            continue
+
+        if res and getattr(res, "data", None):
+            author_id = getattr(res.data, "author_id", None)
+            username = None
+            includes = getattr(res, "includes", None) or {}
+            users = includes.get("users", []) if isinstance(includes, dict) else []
+            for user in users:
+                if getattr(user, "id", None) == author_id:
+                    username = getattr(user, "username", None)
+                    break
+
+            if expected_username and username and username != expected_username:
+                raise RuntimeError(
+                    f"Reply author mismatch after post: expected @{expected_username}, got @{username}."
+                )
+
+            return {
+                "username": username or "",
+                "url": build_tweet_url(reply_id, username=username),
+            }
+
+        if attempt < attempts:
+            time.sleep(delay_seconds)
+
+    raise RuntimeError(
+        "Twitter returned a reply ID but visibility verification failed. "
+        "Do not assume the reply is live. "
+        f"Last error: {last_error}"
+    )
+
+
 def log_reply(log_path: Path, row: Dict[str, Any]) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
@@ -261,9 +330,14 @@ def run_twitter_helper(
     if dry_run:
         return result
 
-    reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
     auth_username = get_authenticated_username(client)
-    reply_url = build_tweet_url(reply_id, username=auth_username)
+    reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
+    verify = verify_reply_visible(
+        client=client,
+        reply_id=reply_id,
+        expected_username=auth_username,
+    )
+    reply_url = verify["url"]
 
     row = {
         "tweet_id": tweet_id,
@@ -330,7 +404,12 @@ def run_mentions_workflow(
 
         if post and posted < max_posts:
             reply_id = post_reply(client=client, tweet_id=tweet_id, text=chosen)
-            reply_url = build_tweet_url(reply_id, username=auth_username)
+            verify = verify_reply_visible(
+                client=client,
+                reply_id=reply_id,
+                expected_username=auth_username,
+            )
+            reply_url = verify["url"]
             row["status"] = "posted"
             row["reply_id"] = reply_id
             row["reply_url"] = reply_url

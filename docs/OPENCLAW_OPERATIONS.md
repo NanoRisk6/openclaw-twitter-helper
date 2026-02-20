@@ -9,6 +9,7 @@ All commands exposed by `python src/twitter_helper.py`:
 - `setup`: interactive wizard for app credentials and base config
 - `auth-login`: OAuth2 browser flow to obtain/refresh access tokens
 - `doctor`: guided diagnostics for config/auth/posting readiness
+- `auto-diagnose`: combined posting + reply diagnosis with optional OAuth2 self-heal
 - `app-settings`: prints exact Twitter Developer Portal settings to copy
 - `walkthrough`: prints full setup/post flow in one place
 - `openclaw-status`: machine-readable status output for automation
@@ -35,6 +36,7 @@ All commands exposed by `python src/twitter_helper.py`:
 | Setup app + env | `python src/twitter_helper.py setup` | Client ID/Secret | `.env` updated |
 | OAuth2 login | `python src/twitter_helper.py auth-login` | Client ID/Secret + browser | OAuth2 access/refresh tokens saved |
 | Health check | `python src/twitter_helper.py doctor` | OAuth2 tokens | PASS/FAIL diagnostics |
+| Auto diagnose (posting + reply) | `python src/twitter_helper.py auto-diagnose` | env + optional network | combined PASS/FAIL + fix steps |
 | Print portal settings | `python src/twitter_helper.py app-settings` | Client ID/Secret recommended | exact values to copy into Twitter app |
 | Print walkthrough | `python src/twitter_helper.py walkthrough` | none | setup/post instructions |
 | Readiness status JSON | `python src/twitter_helper.py openclaw --json` | none (reads `.env`) | machine-readable readiness |
@@ -60,11 +62,12 @@ Core posting flow:
 
 - `TWITTER_CLIENT_ID`
 - `TWITTER_CLIENT_SECRET`
-- `TWITTER_OAUTH2_ACCESS_TOKEN`
-- `TWITTER_OAUTH2_REFRESH_TOKEN`
 - `TWITTER_REDIRECT_URI`
 - `TWITTER_WEBSITE_URL`
 - `TWITTER_SCOPES`
+
+OAuth2 access/refresh tokens are stored in OS keyring when available (account namespace via `--account`).  
+`.env` token fields are fallback-only when keyring is unavailable.
 
 Recommended for browsing/reply scanning:
 
@@ -91,9 +94,11 @@ From repo root:
 - `./run-twitter-helper fix`
 - `./run-twitter-helper reboot`
 - `./run-twitter-helper openclaw`
+- `./run-twitter-helper diagnose`
 - `./run-twitter-helper openclaw-autopost --text "Open Claw update"`
 - `./run-twitter-helper browse-twitter --mode search --query "openclaw" --limit 20`
 - `./run-twitter-helper inspire-tweets --topic "OpenClaw" --max-pages 2 --draft-count 5 --save data/inspiration_latest.json`
+- `./run-twitter-helper --account default diagnose`
 
 Wrapper passes through all subcommands and has aliases:
 
@@ -105,6 +110,7 @@ Use these direct intents from Open Claw:
 
 - "Run Twitter Helper setup" -> `./run-twitter-helper restart`
 - "Check if Twitter posting is healthy" -> `./run-twitter-helper openclaw`
+- "Auto-diagnose posting/replying issues" -> `./run-twitter-helper diagnose`
 - "Post this tweet" -> `./run-twitter-helper openclaw-autopost --text "<text>"`
 - "Post a unique tweet" -> `python src/twitter_helper.py post --text "<text>" --unique`
 - "Reply to this tweet ID" -> `python src/twitter_helper.py post --text "<text>" --in-reply-to <ID>`
@@ -163,6 +169,11 @@ Post-enabled (capped):
 - Ensure token has v2 read access
 - Re-run `auth-login` and `doctor`
 
+429 rate limit:
+
+- The helper auto-retries using `x-rate-limit-reset`
+- If retries are exhausted, wait for reset window and rerun
+
 403 reply not visible/deleted:
 
 - The target tweet ID is not visible to this account
@@ -171,6 +182,11 @@ Post-enabled (capped):
 403 duplicate content:
 
 - Use `post --unique` to append UTC suffix
+
+Posted link is missing / page does not exist:
+
+- The helper now verifies visibility by tweet ID before reporting success
+- If verification fails, treat it as not posted and retry with `post --unique` or a new reply target
 
 Non-interactive auth repair failure:
 

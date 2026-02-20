@@ -1,23 +1,48 @@
 #!/bin/zsh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GLOBAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file|--account)
+      GLOBAL_ARGS+=("$1")
+      shift
+      if [[ $# -gt 0 ]]; then
+        GLOBAL_ARGS+=("$1")
+        shift
+      fi
+      ;;
+    --*)
+      GLOBAL_ARGS+=("$1")
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 FIRST_ARG="${1:-}"
 
 # Easy restart aliases for users/subagents.
 case "$FIRST_ARG" in
   restart|recover|fix|reboot)
     shift || true
-    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" restart-setup "$@"
+    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" restart-setup "$@"
+    ;;
+  diagnose|auto-diagnose|claude-diagnose)
+    shift || true
+    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" auto-diagnose "$@"
     ;;
 esac
 
 # If caller passed a real subcommand, forward directly.
 case "$FIRST_ARG" in
-  setup|auth-login|doctor|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper|restart-setup|browse-twitter|inspire-tweets|reply-discover|reply-rank|reply-ideas|reply-run|reply-twitter-helper|reply-twitter-e2e)
-    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "$@"
+  setup|auth-login|doctor|auto-diagnose|app-settings|walkthrough|openclaw-status|check-auth|post|openclaw-autopost|openclaw|thread|run-twitter-helper|restart-setup|browse-twitter|inspire-tweets|reply-discover|reply-rank|reply-ideas|reply-run|reply-twitter-helper|reply-twitter-e2e)
+    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" "$@"
     ;;
   *)
     # Otherwise use the one-command workflow by default.
-    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" run-twitter-helper "$@"
+    exec python3 "$SCRIPT_DIR/src/twitter_helper.py" "${GLOBAL_ARGS[@]}" run-twitter-helper "$@"
     ;;
 esac

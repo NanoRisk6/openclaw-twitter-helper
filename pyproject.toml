@@ -12,6 +12,7 @@ dependencies = [
   "tweepy",
   "requests-oauthlib",
   "python-dotenv",
+  "keyring",
 ]
 
 [project.optional-dependencies]

@@ -21,6 +21,12 @@ Optional reply-engine extras:
 pip install -r requirements-reply-engine.txt
 ```
 
+Secure token storage:
+
+```bash
+pip install keyring
+```
+
 Set helper dir once for easier commands:
 
 ```bash
@@ -31,6 +37,7 @@ export HELPER_DIR="$(pwd)"
 
 ```bash
 $HELPER_DIR/run-twitter-helper restart
+$HELPER_DIR/run-twitter-helper diagnose
 $HELPER_DIR/run-twitter-helper openclaw-autopost --text "Open Claw is online"
 ```
 
@@ -48,6 +55,14 @@ Setup + OAuth:
 python src/twitter_helper.py setup
 python src/twitter_helper.py auth-login
 python src/twitter_helper.py doctor
+python src/twitter_helper.py auto-diagnose
+```
+
+Multi-account token namespace:
+
+```bash
+python src/twitter_helper.py --account default doctor
+python src/twitter_helper.py --account brand2 auth-login
 ```
 
 `setup` now also asks for `TWITTER_BEARER_TOKEN` (App-Only Authentication).  
@@ -110,6 +125,13 @@ Readiness check:
 ```bash
 python src/twitter_helper.py openclaw
 python src/twitter_helper.py openclaw --json
+```
+
+Claude/Open Claw auto-diagnose:
+
+```bash
+./run-twitter-helper diagnose
+python src/twitter_helper.py auto-diagnose --json
 ```
 
 Browse Twitter (default: recent mentions query for OpenClawAI):
@@ -209,3 +231,6 @@ GitHub Actions workflow: `.github/workflows/test.yml`
 - OAuth1 keys/tokens are not used for primary posting flow.
 - OAuth2 callback URI must exactly match your app settings.
 - Public tweet text is sanitized to remove trailing `[openclaw-YYYYMMDD-HHMMSS-xxxx]` suffixes.
+- Anti-hallucination guard: after post/reply create, the helper re-fetches the tweet by ID and only reports success after verification.
+- OAuth2 access/refresh tokens are saved to OS keyring when available; `.env` is fallback-only.
+- API calls retry on HTTP 429 using `x-rate-limit-reset` before failing.
