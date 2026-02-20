@@ -119,6 +119,16 @@ Use these direct intents from Open Claw:
 - "Run mentions reply workflow draft-only" -> `python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1`
 - "Run mentions reply workflow and post one" -> `python src/twitter_helper.py reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1 --post --max-posts 1`
 
+## OpenClaw `system.run` Examples
+
+Use absolute skill path for reliable execution:
+
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default diagnose --json"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'OpenClaw helper is live 🦞'"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default post --text 'Great point, thanks for sharing.' --in-reply-to 1892345678901234567"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default browse-twitter --handle OpenClawAI --limit 10 --json"`
+- `system.run command:"cd ~/.openclaw/workspace/skills/x-twitter-helper && ./run-twitter-helper --account default reply-twitter-e2e --handle OpenClawAI --mention-limit 20 --draft-count 5 --pick 1"`
+
 ## Recommended Workflows
 
 ### 1. First-time setup

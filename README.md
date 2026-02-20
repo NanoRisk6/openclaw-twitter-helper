@@ -33,6 +33,20 @@ Set helper dir once for easier commands:
 export HELPER_DIR="$(pwd)"
 ```
 
+## OpenClaw Native Skill Install
+
+```bash
+git clone https://github.com/NanoRisk6/openclaw-twitter-helper.git ~/.openclaw/workspace/skills/x-twitter-helper
+cd ~/.openclaw/workspace/skills/x-twitter-helper
+pip install -r requirements.txt
+./run-twitter-helper --account default auth-login
+./run-twitter-helper --account default diagnose
+```
+
+Skill file:
+
+- `SKILL.md`
+
 ## Fast Start
 
 ```bash
